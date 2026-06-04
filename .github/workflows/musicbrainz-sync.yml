@@ -1,0 +1,84 @@
+name: musicbrainz_metadata
+
+on:
+  schedule:
+    # Runs every Wednesday at midnight UTC to match MusicBrainz updates
+    - cron: '0 0 * * 3'
+  workflow_dispatch:
+  # Allows you to manually trigger the pipeline from the GitHub UI anytime
+
+permissions:
+  contents: write
+
+jobs:
+  build-metadata:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Randomize Start Window
+        if: github.event_name == 'schedule'
+        run: |
+          DELAY=$(( RANDOM % 3600 ))
+          echo "Introducing a randomized jitter of $DELAY seconds to distribute server load..."
+          sleep $DELAY
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # MusicBrainz dumps are huge. We clear pre-installed bloatware
+      # on the Ubuntu runner to ensure we have ~60GB+ of free space.
+      - name: Free Disk Space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+
+      - name: Download MusicBrainz Cloud Dumps
+        run: |
+          mkdir -p mbdump
+          echo "Resolving the latest weekly export directory name..."
+          
+          # 1. Fetch the active folder name string from the official open mirror tracker
+          LATEST_FOLDER=$(curl -sL "https://data.musicbrainz.org/pub/musicbrainz/data/fullexport/LATEST")
+          echo "Targeting active timestamp folder: $LATEST_FOLDER"
+          
+          echo "Streaming data packages into workspace from OSU Open Source Lab mirrors..."
+          # 2. Extract using -SLf to fail fast rather than saving corrupt web page text artifacts
+          curl -SLf "https://ftp.musicbrainz.org/pub/musicbrainz/data/fullexport/${LATEST_FOLDER}/mbdump.tar.bz2" \
+            -o mbdump.tar.bz2
+          curl -SLf "https://ftp.musicbrainz.org/pub/musicbrainz/data/fullexport/${LATEST_FOLDER}/mbdump-derived.tar.bz2" \
+            -o mbdump-derived.tar.bz2
+          
+          echo "Downloads completed successfully."
+
+      - name: Run Extraction and Flattening Script
+        run: |
+          python -u scripts/generate_metadata_db.py
+
+      - name: Compress Database Asset
+        run: |
+          echo "Compressing SQLite binary..."
+          tar -czf metadata_core.tar.gz metadata_core.db
+
+      - name: Get Current Date Tag
+        id: date
+        run: echo "tag=v$(date +'%Y.%m.%d')" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release and Upload Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.date.outputs.tag }}
+          name: MusicBrainz Metadata Release ${{ steps.date.outputs.tag }}
+          body: |
+            Automated snapshot of the flattened MusicBrainz lookup database.
+            Targeted Platforms: Platform ID Links, Text Search Fallback Map.
+            Includes Release Group MBIDs (Cover Art Archive) and Artist Wikidata IDs.
+          draft: false
+          prerelease: false
+          files: |
+            metadata_core.tar.gz
