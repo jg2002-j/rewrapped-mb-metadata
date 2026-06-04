@@ -19,8 +19,14 @@ TRACKED_FILES = {
     "mbdump/l_artist_url": "raw_l_artist_url"
 }
 
-# The domains we actually care about. Everything else gets thrown in the trash.
-TARGET_DOMAINS = ["wikidata.org", "spotify.com", "spotify:", "apple.com", "tidal.com", "deezer.com"]
+TARGET_DOMAINS = [
+    "wikidata.org", 
+    "spotify.com",   # Catches open.spotify, play.spotify, and your googleusercontent links
+    "spotify:",      # Catches native Spotify URIs (e.g., spotify:track:12345)
+    "apple.com",     # Catches music.apple.com and legacy itunes.apple.com links
+    "tidal.com",     # Catches tidal.com and listen.tidal.com
+    "tidalhifi.com"  # Catches legacy Tidal links sometimes still floating around in MB
+]
 
 def log(message):
     """Helper to print timestamped logs so we can track execution time."""
