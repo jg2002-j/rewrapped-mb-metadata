@@ -4,7 +4,6 @@ import sqlite3
 import tarfile
 from datetime import datetime
 
-# --- CONFIGURATION CONSTANTS ---
 DB_NAME = "metadata_core.db"
 TAR_FILES = ["mbdump.tar.bz2", "mbdump-derived.tar.bz2"]
 
@@ -13,19 +12,32 @@ TRACKED_FILES = {
     "mbdump/release": "raw_release",
     "mbdump/release_group": "raw_release_group",
     "mbdump/release_group_primary_type": "raw_rg_type",
+    "mbdump/medium": "raw_medium",  # The crucial bridge between Release and Track
     "mbdump/track": "raw_track",
     "mbdump/url": "raw_url",
     "mbdump/l_release_url": "raw_l_release_url",
     "mbdump/l_artist_url": "raw_l_artist_url"
 }
 
+COLUMN_MAP = {
+    "raw_artist": [0, 1, 2],                   # id, gid, name
+    "raw_release": [0, 1, 2, 4],               # id, gid, name, release_group
+    "raw_release_group": [0, 1, 2, 3, 4],      # id, gid, name, artist_credit, type
+    "raw_rg_type": [0, 1],                     # id, name
+    "raw_medium": [0, 1],                      # id, release
+    "raw_track": [0, 1, 6, 3, 8],              # id, gid, name (6), medium (3), length (8)
+    "raw_url": [0, 1, 2],                      # id, gid, url
+    "raw_l_release_url": [0, 2, 3],            # id, entity0, entity1
+    "raw_l_artist_url": [0, 2, 3]              # id, entity0, entity1
+}
+
 TARGET_DOMAINS = [
     "wikidata.org", 
-    "spotify.com",   # Catches open.spotify, play.spotify, and your googleusercontent links
-    "spotify:",      # Catches native Spotify URIs (e.g., spotify:track:12345)
-    "apple.com",     # Catches music.apple.com and legacy itunes.apple.com links
-    "tidal.com",     # Catches tidal.com and listen.tidal.com
-    "tidalhifi.com"  # Catches legacy Tidal links sometimes still floating around in MB
+    "spotify.com", 
+    "spotify:",      
+    "apple.com",     
+    "tidal.com",     
+    "tidalhifi.com"  
 ]
 
 def log(message):
@@ -33,9 +45,12 @@ def log(message):
     timestamp = datetime.now().strftime("%H:%M:%S")
     print(f"[{timestamp}] {message}")
 
-
 def init_database():
     log(f"Initializing database: {DB_NAME}")
+    
+    if os.path.exists(DB_NAME):
+        os.remove(DB_NAME)
+        
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
@@ -45,56 +60,52 @@ def init_database():
     cursor.execute("PRAGMA temp_store = MEMORY;")
 
     cursor.execute("""
-                   CREATE TABLE IF NOT EXISTS link_canonical_lookup
-                   (
-                       streaming_link      TEXT PRIMARY KEY,
-                       track_title         TEXT    NOT NULL,
-                       duration_ms         INTEGER NOT NULL,
-                       album_mbid          TEXT    NOT NULL,
-                       album_title         TEXT    NOT NULL,
-                       release_group_mbid  TEXT    NOT NULL,
-                       release_group_title TEXT    NOT NULL,
-                       release_group_type  TEXT    NOT NULL,
-                       artist_mbid         TEXT    NOT NULL,
-                       artist_name         TEXT    NOT NULL,
-                       artist_wikidata_id  TEXT
-                   );
-                   """)
+        CREATE TABLE IF NOT EXISTS link_canonical_lookup (
+            streaming_link      TEXT PRIMARY KEY,
+            track_title         TEXT    NOT NULL,
+            duration_ms         INTEGER NOT NULL,
+            album_mbid          TEXT    NOT NULL,
+            album_title         TEXT    NOT NULL,
+            release_group_mbid  TEXT    NOT NULL,
+            release_group_title TEXT    NOT NULL,
+            release_group_type  TEXT    NOT NULL,
+            artist_mbid         TEXT    NOT NULL,
+            artist_name         TEXT    NOT NULL,
+            artist_wikidata_id  TEXT
+        );
+    """)
 
     cursor.execute("""
-                   CREATE TABLE IF NOT EXISTS text_canonical_lookup
-                   (
-                       clean_track         TEXT    NOT NULL,
-                       clean_album         TEXT    NOT NULL,
-                       clean_artist        TEXT    NOT NULL,
-                       track_title         TEXT    NOT NULL,
-                       duration_ms         INTEGER NOT NULL,
-                       album_mbid          TEXT    NOT NULL,
-                       album_title         TEXT    NOT NULL,
-                       release_group_mbid  TEXT    NOT NULL,
-                       release_group_title TEXT    NOT NULL,
-                       release_group_type  TEXT    NOT NULL,
-                       artist_mbid         TEXT    NOT NULL,
-                       artist_name         TEXT    NOT NULL,
-                       artist_wikidata_id  TEXT,
-                       PRIMARY KEY (clean_track, clean_album, clean_artist)
-                   );
-                   """)
+        CREATE TABLE IF NOT EXISTS text_canonical_lookup (
+            clean_track         TEXT    NOT NULL,
+            clean_album         TEXT    NOT NULL,
+            clean_artist        TEXT    NOT NULL,
+            track_title         TEXT    NOT NULL,
+            duration_ms         INTEGER NOT NULL,
+            album_mbid          TEXT    NOT NULL,
+            album_title         TEXT    NOT NULL,
+            release_group_mbid  TEXT    NOT NULL,
+            release_group_title TEXT    NOT NULL,
+            release_group_type  TEXT    NOT NULL,
+            artist_mbid         TEXT    NOT NULL,
+            artist_name         TEXT    NOT NULL,
+            artist_wikidata_id  TEXT,
+            PRIMARY KEY (clean_track, clean_album, clean_artist)
+        );
+    """)
 
     cursor.execute("CREATE TABLE IF NOT EXISTS raw_artist (id INTEGER, gid TEXT, name TEXT);")
     cursor.execute("CREATE TABLE IF NOT EXISTS raw_release (id INTEGER, gid TEXT, name TEXT, release_group INTEGER);")
-    cursor.execute(
-        "CREATE TABLE IF NOT EXISTS raw_release_group (id INTEGER, gid TEXT, name TEXT, artist_credit INTEGER, type INTEGER);")
+    cursor.execute("CREATE TABLE IF NOT EXISTS raw_release_group (id INTEGER, gid TEXT, name TEXT, artist_credit INTEGER, type INTEGER);")
     cursor.execute("CREATE TABLE IF NOT EXISTS raw_rg_type (id INTEGER, name TEXT);")
-    cursor.execute(
-        "CREATE TABLE IF NOT EXISTS raw_track (id INTEGER, gid TEXT, name TEXT, release INTEGER, length INTEGER);")
+    cursor.execute("CREATE TABLE IF NOT EXISTS raw_medium (id INTEGER, release INTEGER);")
+    cursor.execute("CREATE TABLE IF NOT EXISTS raw_track (id INTEGER, gid TEXT, name TEXT, medium INTEGER, length INTEGER);")
     cursor.execute("CREATE TABLE IF NOT EXISTS raw_url (id INTEGER, gid TEXT, url TEXT);")
     cursor.execute("CREATE TABLE IF NOT EXISTS raw_l_release_url (id INTEGER, entity0 INTEGER, entity1 INTEGER);")
     cursor.execute("CREATE TABLE IF NOT EXISTS raw_l_artist_url (id INTEGER, entity0 INTEGER, entity1 INTEGER);")
 
     conn.commit()
     return conn
-
 
 def clean_string(text):
     if not text:
@@ -103,22 +114,21 @@ def clean_string(text):
     text = re.sub(r'[^\w\s]', '', text)
     return " ".join(text.split())
 
-
 def extract_wikidata_token(url_string):
     if not url_string:
         return None
     match = re.search(r'wikidata\.org/wiki/(Q\d+)', url_string)
     return match.group(1) if match else None
 
-
 def stream_file_into_sqlite(cursor, file_stream, table_name):
     batch = []
     batch_size = 100000
     rows_processed = 0
 
-    cursor.execute(f"PRAGMA table_info({table_name});")
-    col_count = len(cursor.fetchall())
-
+    target_indices = COLUMN_MAP[table_name]
+    col_count = len(target_indices)
+    max_index = max(target_indices)
+    
     placeholders = ",".join(["?"] * col_count)
     insert_sql = f"INSERT INTO {table_name} VALUES ({placeholders});"
 
@@ -126,12 +136,13 @@ def stream_file_into_sqlite(cursor, file_stream, table_name):
         row_str = line.decode('utf-8', errors='ignore').rstrip('\n')
         columns = row_str.split('\t')
 
-        sliced_columns = columns[:col_count]
-        if len(sliced_columns) < col_count:
-            sliced_columns += [None] * (col_count - len(sliced_columns))
+        if len(columns) <= max_index:
+            columns += ['\\N'] * ((max_index + 1) - len(columns))
 
-        if table_name == "raw_url" and len(columns) > 2:
-            if not any(domain in columns[2] for domain in TARGET_DOMAINS):
+        sliced_columns = [columns[i] for i in target_indices]
+
+        if table_name == "raw_url":
+            if not any(domain in sliced_columns[2] for domain in TARGET_DOMAINS):
                 continue
 
         cleaned_row = [None if col == '\\N' or col == '' else col for col in sliced_columns]
@@ -140,7 +151,7 @@ def stream_file_into_sqlite(cursor, file_stream, table_name):
 
         if len(batch) >= batch_size:
             cursor.executemany(insert_sql, batch)
-            cursor.connection.commit()  # <--- FIX 1: Commit the batch to free up memory!
+            cursor.connection.commit()
             batch = []
 
         if rows_processed % 500000 == 0:
@@ -151,7 +162,6 @@ def stream_file_into_sqlite(cursor, file_stream, table_name):
         cursor.connection.commit()
 
     log(f"✅ Completed {table_name}. Total saved rows: {rows_processed:,}")
-
 
 def stream_tar_and_populate_raw(conn):
     cursor = conn.cursor()
@@ -180,7 +190,8 @@ def execute_flattening_joins(conn):
     conn.create_function("WIKITOKEN", 1, extract_wikidata_token)
 
     log("🗂️ Building temporary execution indexes for the relational map...")
-    cursor.execute("CREATE INDEX IF NOT EXISTS tmp_t_rel ON raw_track(release);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS tmp_t_med ON raw_track(medium);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS tmp_m_rel ON raw_medium(release);")
     cursor.execute("CREATE INDEX IF NOT EXISTS tmp_r_id ON raw_release(id, release_group);")
     cursor.execute("CREATE INDEX IF NOT EXISTS tmp_rg_id ON raw_release_group(id, artist_credit);")
     cursor.execute("CREATE INDEX IF NOT EXISTS tmp_lru_ent ON raw_l_release_url(entity0, entity1);")
@@ -191,63 +202,57 @@ def execute_flattening_joins(conn):
 
     log("🔗 Flattening and generating platform streaming link cache...")
     cursor.execute("""
-                   INSERT OR IGNORE INTO link_canonical_lookup
-                   SELECT DISTINCT u.url, t.name, COALESCE(t.length, 0), r.gid, r.name,
-                                   rg.gid, rg.name, COALESCE(rgt.name, 'Unknown'),
-                                   a.gid, a.name, WIKITOKEN(artist_u.url)
-                   FROM raw_l_release_url lru
-                            JOIN raw_url u ON lru.entity1 = u.id
-                            JOIN raw_release r ON lru.entity0 = r.id
-                            JOIN raw_release_group rg ON r.release_group = rg.id
-                            LEFT JOIN raw_rg_type rgt ON rg.type = rgt.id
-                            JOIN raw_track t ON t.release = r.id
-                            JOIN raw_artist a ON rg.artist_credit = a.id
-                            LEFT JOIN raw_l_artist_url lau ON a.id = lau.entity0
-                            LEFT JOIN raw_url artist_u
-                                      ON lau.entity1 = artist_u.id AND artist_u.url LIKE '%wikidata.org%';
-                   """)
+        INSERT OR IGNORE INTO link_canonical_lookup
+        SELECT DISTINCT u.url, t.name, COALESCE(t.length, 0), r.gid, r.name,
+                        rg.gid, rg.name, COALESCE(rgt.name, 'Unknown'),
+                        a.gid, a.name, WIKITOKEN(artist_u.url)
+        FROM raw_l_release_url lru
+            JOIN raw_url u ON lru.entity1 = u.id
+            JOIN raw_release r ON lru.entity0 = r.id
+            JOIN raw_medium m ON r.id = m.release
+            JOIN raw_track t ON t.medium = m.id
+            JOIN raw_release_group rg ON r.release_group = rg.id
+            LEFT JOIN raw_rg_type rgt ON rg.type = rgt.id
+            JOIN raw_artist a ON rg.artist_credit = a.id
+            LEFT JOIN raw_l_artist_url lau ON a.id = lau.entity0
+            LEFT JOIN raw_url artist_u ON lau.entity1 = artist_u.id AND artist_u.url LIKE '%wikidata.org%';
+    """)
     conn.commit()
     log("✅ Link cache complete!")
 
-    # --- OPTIMIZED TEXT LOOKUP STEP ---
     log("🔤 Creating un-cleaned staging table for text lookups...")
     cursor.execute("""
-                   CREATE TABLE IF NOT EXISTS tmp_text_staging (
-                                                                   t_name TEXT, r_name TEXT, a_name TEXT, length INT,
-                                                                   r_gid TEXT, rg_gid TEXT, rg_name TEXT, rgt_name TEXT,
-                                                                   a_gid TEXT, artist_url TEXT
-                   );
-                   """)
+        CREATE TABLE IF NOT EXISTS tmp_text_staging (
+            t_name TEXT, r_name TEXT, a_name TEXT, length INT,
+            r_gid TEXT, rg_gid TEXT, rg_name TEXT, rgt_name TEXT,
+            a_gid TEXT, artist_url TEXT
+        );
+    """)
 
-    log("🔗 Executing joins...")
-    # This finishes in 1-2 minutes because SQLite stays entirely in its own runtime environment
+    log("🔗 Executing text lookup joins...")
     cursor.execute("""
-                   INSERT INTO tmp_text_staging
-                   SELECT DISTINCT t.name, r.name, a.name, COALESCE(t.length, 0),
-                                   r.gid, rg.gid, rg.name, COALESCE(rgt.name, 'Unknown'),
-                                   a.gid, artist_u.url
-                   FROM raw_track t
-                            JOIN raw_release r ON t.release = r.id
-                            JOIN raw_release_group rg ON r.release_group = rg.id
-                            LEFT JOIN raw_rg_type rgt ON rg.type = rgt.id
-                            JOIN raw_artist a ON rg.artist_credit = a.id
-                            LEFT JOIN raw_l_artist_url lau ON a.id = lau.entity0
-                            LEFT JOIN raw_url artist_u
-                                      ON lau.entity1 = artist_u.id AND artist_u.url LIKE '%wikidata.org%';
-                   """)
+        INSERT INTO tmp_text_staging
+        SELECT DISTINCT t.name, r.name, a.name, COALESCE(t.length, 0),
+                        r.gid, rg.gid, rg.name, COALESCE(rgt.name, 'Unknown'),
+                        a.gid, artist_u.url
+        FROM raw_track t
+            JOIN raw_medium m ON t.medium = m.id
+            JOIN raw_release r ON m.release = r.id
+            JOIN raw_release_group rg ON r.release_group = rg.id
+            LEFT JOIN raw_rg_type rgt ON rg.type = rgt.id
+            JOIN raw_artist a ON rg.artist_credit = a.id
+            LEFT JOIN raw_l_artist_url lau ON a.id = lau.entity0
+            LEFT JOIN raw_url artist_u ON lau.entity1 = artist_u.id AND artist_u.url LIKE '%wikidata.org%';
+    """)
     conn.commit()
 
     log("🔤 Processing string cleaning and migrating to final table in managed batches...")
-    # Read from staging, clean strings side-by-side in native Python loops, and write back in chunks
     cursor.execute("SELECT * FROM tmp_text_staging;")
 
     batch = []
     batch_size = 250000
     total_inserted = 0
-
-    insert_sql = """
-                 INSERT OR IGNORE INTO text_canonical_lookup VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?); \
-                 """
+    insert_sql = "INSERT OR IGNORE INTO text_canonical_lookup VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?);"
 
     while True:
         rows = cursor.fetchmany(batch_size)
@@ -257,7 +262,6 @@ def execute_flattening_joins(conn):
         for row in rows:
             t_name, r_name, a_name, length, r_gid, rg_gid, rg_name, rgt_name, a_gid, artist_url = row
 
-            # Clean text smoothly entirely in Python memory structures
             clean_t = clean_string(t_name)
             clean_r = clean_string(r_name)
             clean_a = clean_string(a_name)
@@ -269,7 +273,6 @@ def execute_flattening_joins(conn):
             ))
 
         if len(batch) >= batch_size:
-            # Drop cleanly via an alternative internal database cursor instance
             conn.cursor().executemany(insert_sql, batch)
             conn.commit()
             total_inserted += len(batch)
@@ -281,36 +284,6 @@ def execute_flattening_joins(conn):
         conn.commit()
         total_inserted += len(batch)
 
-    # Clean up our massive text staging architecture
     conn.cursor().execute("DROP TABLE IF EXISTS tmp_text_staging;")
     conn.commit()
-    log(f"✅ Text cache complete! Total uniquely mapped records: {total_inserted:,}")
-
-def optimize_and_cleanup(conn):
-    cursor = conn.cursor()
-    log("🧹 Dropping intermediate staging files...")
-
-    for raw_table in TRACKED_FILES.values():
-        cursor.execute(f"DROP TABLE IF EXISTS {raw_table};")
-
-    log("🗂️ Assembling binary search indexes...")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_link_search ON link_canonical_lookup(streaming_link);")
-    cursor.execute(
-        "CREATE INDEX IF NOT EXISTS idx_text_search ON text_canonical_lookup(clean_track, clean_album, clean_artist);")
-    conn.commit()
-
-if __name__ == "__main__":
-    import sys
-
-    log("🚀 Starting pipeline...")
-    connection = init_database()
-    try:
-        stream_tar_and_populate_raw(connection)
-        execute_flattening_joins(connection)
-        optimize_and_cleanup(connection)
-        log("🎉 Complete lookup asset compiled successfully!")
-    except Exception as e:
-        log(f"❌ Structural Failure during extraction: {str(e)}")
-        sys.exit(1)
-    finally:
-        connection.close()
+    log(f"✅ Text cache complete! Total uniquely mapped records: {total_inserted:,
