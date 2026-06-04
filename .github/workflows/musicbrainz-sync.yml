@@ -2,10 +2,8 @@ name: musicbrainz_metadata
 
 on:
   schedule:
-    # Runs every Wednesday at midnight UTC to match MusicBrainz updates
-    - cron: '0 0 * * 3'
+    - cron: '33 3 * * 3'
   workflow_dispatch:
-  # Allows you to manually trigger the pipeline from the GitHub UI anytime
 
 permissions:
   contents: write
@@ -18,37 +16,29 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Randomize Start Window
-        if: github.event_name == 'schedule'
-        run: |
-          DELAY=$(( RANDOM % 3600 ))
-          echo "Introducing a randomized jitter of $DELAY seconds to distribute server load..."
-          sleep $DELAY
+      - name: Maximize Runner Disk Space
+        uses: easimon/maximize-build-space@v10
+        with:
+          root-reserve-mb: 3072
+          swap-size-mb: 1024
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      # MusicBrainz dumps are huge. We clear pre-installed bloatware
-      # on the Ubuntu runner to ensure we have ~60GB+ of free space.
-      - name: Free Disk Space
-        run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-
       - name: Download MusicBrainz Cloud Dumps
         run: |
-          mkdir -p mbdump
           echo "Resolving the latest weekly export directory name..."
-          
-          # 1. Fetch the active folder name string from the official open mirror tracker
           LATEST_FOLDER=$(curl -sL "https://data.musicbrainz.org/pub/musicbrainz/data/fullexport/LATEST")
           echo "Targeting active timestamp folder: $LATEST_FOLDER"
           
-          echo "Streaming data packages into workspace from OSU Open Source Lab mirrors..."
-          # 2. Extract using -SLf to fail fast rather than saving corrupt web page text artifacts
+          echo "Streaming data packages into workspace..."
           curl -SLf "https://ftp.musicbrainz.org/pub/musicbrainz/data/fullexport/${LATEST_FOLDER}/mbdump.tar.bz2" \
             -o mbdump.tar.bz2
           curl -SLf "https://ftp.musicbrainz.org/pub/musicbrainz/data/fullexport/${LATEST_FOLDER}/mbdump-derived.tar.bz2" \
