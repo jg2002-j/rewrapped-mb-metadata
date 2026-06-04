@@ -20,8 +20,7 @@ TRACKED_FILES = {
 }
 
 # The domains we actually care about. Everything else gets thrown in the trash.
-TARGET_DOMAINS = ["wikidata.org", "spotify.com", "apple.com", "tidal.com", "deezer.com"]
-
+TARGET_DOMAINS = ["wikidata.org", "spotify.com", "spotify:", "apple.com", "tidal.com", "deezer.com"]
 
 def log(message):
     """Helper to print timestamped logs so we can track execution time."""
