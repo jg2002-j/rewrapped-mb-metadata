@@ -38,12 +38,11 @@ BUILD_LINK_LOOKUP_SQL = f"""
         JOIN raw_artist_credit_name acn ON rg.artist_credit = acn.artist_credit
         JOIN raw_artist a ON acn.artist = a.id
         LEFT JOIN raw_l_artist_url lau ON a.id = lau.entity0 
-        LEFT JOIN raw_url artist_u ON lau.entity1 = artist_u.id AND artist_u.url LIKE '%wikidata.org%'
-        WHERE u.url LIKE '%http://googleusercontent.com/spotify.com/%' 
-           OR u.url LIKE 'spotify:%' 
-           OR u.url LIKE '%apple.com%' 
-           OR u.url LIKE '%tidal.com%' 
-           OR u.url LIKE '%wikidata.org%'
+        LEFT JOIN raw_url artist_u ON lau.entity1 = artist_u.id AND artist_u.url LIKE '%wikidata%'
+        WHERE u.url LIKE '%spotify/%'
+           OR u.url LIKE '%apple%' 
+           OR u.url LIKE '%tidal%'
+           OR u.url LIKE '%wikidata%'
     )
     SELECT 
         streaming_link, track_title, duration_ms, recording_mbid, 
@@ -117,7 +116,7 @@ def GET_CHUNKED_TEXT_LOOKUP_SQL(start_id, end_id):
             JOIN raw_artist_credit_name acn ON rg.artist_credit = acn.artist_credit
             JOIN raw_artist a ON acn.artist = a.id
             LEFT JOIN raw_l_artist_url lau ON a.id = lau.entity0 
-            LEFT JOIN raw_url artist_u ON lau.entity1 = artist_u.id AND artist_u.url LIKE '%wikidata.org%'
+            LEFT JOIN raw_url artist_u ON lau.entity1 = artist_u.id AND artist_u.url LIKE '%wikidata%'
             WHERE t.id >= {start_id} AND t.id < {end_id}
         )
         GROUP BY clean_track, clean_album, clean_artist;

@@ -10,10 +10,10 @@ def create_mini_test_archive(source_tar, output_tar, target_files):
     with tarfile.open(source_tar, "r:bz2") as src, tarfile.open(output_tar, "w:bz2") as dst:
         for member in src:
             if member.name in target_files:
-                print(f"  -> Truncating {member.name} to 100 rows...")
-                # Read lines, keep the first 100
+                print(f"  -> Truncating {member.name} to 500 rows...")
+                # Read lines, keep the first 500
                 f = src.extractfile(member)
-                lines = [f.readline() for _ in range(100)]
+                lines = [f.readline() for _ in range(500)]
                 lines = [l for l in lines if l] # Filter out empty lines if file is short
 
                 # Write back into a fresh temporary file
