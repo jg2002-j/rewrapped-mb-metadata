@@ -52,8 +52,6 @@ jobs:
           echo "Streaming data packages into workspace..."
           curl -SLf "https://ftp.musicbrainz.org/pub/musicbrainz/data/fullexport/${LATEST_FOLDER}/mbdump.tar.bz2" \
             -o mbdump.tar.bz2
-          curl -SLf "https://ftp.musicbrainz.org/pub/musicbrainz/data/fullexport/${LATEST_FOLDER}/mbdump-derived.tar.bz2" \
-            -o mbdump-derived.tar.bz2
           
           echo "Downloads completed successfully."
 
