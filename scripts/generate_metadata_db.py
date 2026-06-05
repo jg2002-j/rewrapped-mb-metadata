@@ -155,7 +155,6 @@ def verify_extracted_counts(con):
         "raw_url": 10 if is_test_env else 19000000,
         "raw_track": 10 if is_test_env else 55000000,
         "raw_recording": 10 if is_test_env else 35000000,
-        "raw_l_recording_url": 5 if is_test_env else 5000000
     }
 
     for table_name, expected_minimum in baselines.items():

@@ -11,3 +11,4 @@ dryrun/
 *.db
 *.tsv
 *.wal
+/duckdb_working.db.tmp/
