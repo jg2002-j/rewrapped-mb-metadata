@@ -1,3 +1,12 @@
-/.idea/
-./scripts/mbdump.tar.bz2
-./scripts/mbdump-derived.tar.bz2
+# IDE Settings
+.idea/
+.vscode/
+
+# Testing & Local Data Archives
+dryrun/
+*.tar.bz2
+*.tar.gz
+
+# Pipeline Output Databases & Temporary Files
+*.db
+*.tsv
