@@ -220,10 +220,7 @@ if __name__ == "__main__":
 
     try:
         stream_tar_to_duckdb(db_con)
-
-        # Run count checks on ingested data before computing queries
         verify_extracted_counts(db_con)
-
         execute_analytics_and_export(db_con)
         optimize_final_sqlite()
         log("🎉 Asset compilation completed successfully!")
