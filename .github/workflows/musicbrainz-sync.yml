@@ -24,6 +24,13 @@ jobs:
           remove-codeql: 'true'
           remove-docker-images: 'true'
 
+      # Freeing up secondary tool dependencies for immediate workspace swapping
+      - name: Purge Tool Framework Overheads
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+
       - name: Checkout Code
         uses: actions/checkout@v4
 
@@ -74,6 +81,6 @@ jobs:
           draft: false
           prerelease: false
           files: |
-            ${{ github.workspace }}/metadata_core.tar.gz  # FIX: Ensures explicit pathing for the runner
+            ${{ github.workspace }}/metadata_core.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -31,10 +31,17 @@ TABLE_SCHEMAS = {
         "id", "gid", "recording", "medium", "position", "number", "name",
         "length", "edits_pending", "last_updated", "is_data_track"
     ],
+    "mbdump/recording": [
+        "id", "gid", "name", "artist_credit", "length", "comment",
+        "edits_pending", "last_updated", "video"
+    ],
     "mbdump/url": [
         "id", "gid", "url", "description", "edits_pending", "last_updated"
     ],
     "mbdump/l_release_url": [
+        "id", "link", "entity0", "entity1", "edits_pending", "last_updated"
+    ],
+    "mbdump/l_recording_url": [
         "id", "link", "entity0", "entity1", "edits_pending", "last_updated"
     ],
     "mbdump/l_artist_url": [
@@ -54,8 +61,10 @@ TABLE_MAPPING = {
     "mbdump/release_group_primary_type": "raw_rg_type",
     "mbdump/medium": "raw_medium",
     "mbdump/track": "raw_track",
+    "mbdump/recording": "raw_recording",
     "mbdump/url": "raw_url",
     "mbdump/l_release_url": "raw_l_release_url",
+    "mbdump/l_recording_url": "raw_l_recording_url",
     "mbdump/l_artist_url": "raw_l_artist_url",
     "l_artist_url": "raw_l_artist_url"
 }
