@@ -74,4 +74,6 @@ jobs:
           draft: false
           prerelease: false
           files: |
-            metadata_core.tar.gz
+            ${{ github.workspace }}/metadata_core.tar.gz  # FIX: Ensures explicit pathing for the runner
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

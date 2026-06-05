@@ -10,3 +10,4 @@ dryrun/
 # Pipeline Output Databases & Temporary Files
 *.db
 *.tsv
+*.wal

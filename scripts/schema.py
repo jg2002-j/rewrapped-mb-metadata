@@ -6,7 +6,7 @@ TABLE_SCHEMAS = {
         "id", "gid", "name", "sort_name", "begin_date_year", "begin_date_month",
         "begin_date_day", "end_date_year", "end_date_month", "end_date_day",
         "type", "area", "gender", "comment", "edits_pending", "last_updated",
-        "ended", "begin_area", "end_area"  # Verified: 19 columns total
+        "ended", "begin_area", "end_area"
     ],
     "mbdump/artist_credit_name": [
         "artist_credit", "position", "artist", "name", "join_phrase"
@@ -39,6 +39,9 @@ TABLE_SCHEMAS = {
     ],
     "mbdump/l_artist_url": [
         "id", "link", "entity0", "entity1", "edits_pending", "last_updated"
+    ],
+    "l_artist_url": [
+        "id", "link", "entity0", "entity1", "edits_pending", "last_updated"
     ]
 }
 
@@ -53,5 +56,6 @@ TABLE_MAPPING = {
     "mbdump/track": "raw_track",
     "mbdump/url": "raw_url",
     "mbdump/l_release_url": "raw_l_release_url",
-    "mbdump/l_artist_url": "raw_l_artist_url"
+    "mbdump/l_artist_url": "raw_l_artist_url",
+    "l_artist_url": "raw_l_artist_url"
 }

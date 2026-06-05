@@ -1,6 +1,6 @@
-# Compilation Analytic Queries Using Audited Named Column Semantics
+# Compilation Analytic Queries Using Integer-Optimized Keys
 
-DUCKDB_CLEAN_STR = "lower(regexp_replace(regexp_replace(trim(COL), '[^\\w\\s]', '', 'g'), '\\s+', ' ', 'g'))"
+DUCKDB_CLEAN_STR = "lower(regexp_replace(regexp_replace(trim(COL), '[^\\\\w\\\\s]', '', 'g'), '\\\\s+', ' ', 'g'))"
 
 BUILD_LINK_LOOKUP_SQL = f"""
     INSERT INTO sqlite_db.link_canonical_lookup
@@ -30,15 +30,15 @@ BUILD_LINK_LOOKUP_SQL = f"""
             a.name AS artist_name,
             regexp_extract(artist_u.url, 'wikidata\\.org/wiki/(Q\\d+)', 1) AS artist_wikidata_id
         FROM raw_l_release_url lru
-        JOIN raw_url u ON lru.entity1 = u.id               -- entity1 is url
-        JOIN raw_release r ON lru.entity0 = r.id           -- entity0 is release
+        JOIN raw_url u ON lru.entity1 = u.id               
+        JOIN raw_release r ON lru.entity0 = r.id           
         JOIN raw_medium m ON r.id = m.release
         JOIN raw_track t ON t.medium = m.id
         JOIN raw_release_group rg ON r.release_group = rg.id
         LEFT JOIN raw_rg_type rgt ON rg.type = rgt.id
         JOIN raw_artist_credit_name acn ON rg.artist_credit = acn.artist_credit
         JOIN raw_artist a ON acn.artist = a.id
-        LEFT JOIN raw_l_artist_url lau ON a.id = lau.entity0 -- entity0 is artist
+        LEFT JOIN raw_l_artist_url lau ON a.id = lau.entity0 
         LEFT JOIN raw_url artist_u ON lau.entity1 = artist_u.id AND artist_u.url LIKE '%wikidata.org%'
         WHERE u.url LIKE '%http://googleusercontent.com/spotify.com/%' 
            OR u.url LIKE 'spotify:%' 
@@ -87,7 +87,7 @@ BUILD_TEXT_LOOKUP_SQL = f"""
         LEFT JOIN raw_rg_type rgt ON rg.type = rgt.id
         JOIN raw_artist_credit_name acn ON rg.artist_credit = acn.artist_credit
         JOIN raw_artist a ON acn.artist = a.id
-        LEFT JOIN raw_l_artist_url lau ON a.id = lau.entity0 -- entity0 is artist
+        LEFT JOIN raw_l_artist_url lau ON a.id = lau.entity0 
         LEFT JOIN raw_url artist_u ON lau.entity1 = artist_u.id AND artist_u.url LIKE '%wikidata.org%'
     )
     GROUP BY clean_track, clean_album, clean_artist;
