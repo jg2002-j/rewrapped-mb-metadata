@@ -12,6 +12,11 @@ jobs:
   build-metadata:
     runs-on: ubuntu-latest
 
+    # Force Python installations and package caches onto the maximized workspace partition
+    env:
+      RUNNER_TOOL_CACHE: ${{ github.workspace }}/toolcache
+      PIP_CACHE_DIR: ${{ github.workspace }}/.cache/pip
+
     steps:
       - name: Maximize Runner Disk Space
         uses: easimon/maximize-build-space@v10
@@ -23,13 +28,6 @@ jobs:
           remove-haskell: 'true'
           remove-codeql: 'true'
           remove-docker-images: 'true'
-
-      # Freeing up secondary tool dependencies for immediate workspace swapping
-      - name: Purge Tool Framework Overheads
-        run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
 
       - name: Checkout Code
         uses: actions/checkout@v4
