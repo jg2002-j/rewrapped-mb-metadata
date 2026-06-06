@@ -100,7 +100,6 @@ def init_duckdb():
     con.execute("SET temp_directory='.duckdb_tmp';")
     con.execute("SET threads=2;")
     con.execute("SET preserve_insertion_order=false;")
-    con.execute("SET enable_progress_bar=false;")
 
     log("DuckDB memory and thread configurations successfully applied.")
     return con
