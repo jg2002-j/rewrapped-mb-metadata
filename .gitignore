@@ -13,6 +13,7 @@ dryrun/
 *.wal
 /duckdb_working.db.tmp/
 /.duckdb_tmp/
+/metadata_core.db-journal
 
 # Other
 /do_not_track/

@@ -59,8 +59,8 @@ jobs:
 
       - name: Compress Database Asset
         run: |
-          echo "Compressing SQLite binary..."
-          tar -czf metadata_core.tar.gz metadata_core.db
+          echo "Compressing SQLite binary using high-ratio ZSTD compression..."
+          tar -I 'zstd -19 -T2' -cf metadata_core.tar.zst metadata_core.db
 
       - name: Get Current Date Tag
         id: date
@@ -77,6 +77,6 @@ jobs:
           draft: false
           prerelease: false
           files: |
-            ${{ github.workspace }}/metadata_core.tar.gz
+            ${{ github.workspace }}/metadata_core.tar.zst
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
