@@ -33,8 +33,8 @@ TAR_FILES = get_tar_path()
 
 
 def log(message):
-    utc_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{utc_timestamp}] {message}")
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{timestamp}] {message}")
 
 
 def init_duckdb():
@@ -51,6 +51,10 @@ def init_duckdb():
     con.execute("SET temp_directory='.duckdb_tmp';")
     con.execute("SET threads=2;")
     con.execute("SET preserve_insertion_order=false;")
+
+    log("Activating terminal-based async query progress tracking bar...")
+    con.execute("SET enable_progress_bar=true;")
+
     log("DuckDB memory and thread configurations successfully applied.")
     return con
 
@@ -320,4 +324,4 @@ if __name__ == "__main__":
         if os.path.exists(".duckdb_tmp"):
             shutil.rmtree(".duckdb_tmp", ignore_errors=True)
 
-        log(f"Workspace scratch files cleared completely. Exit procedures finalized at total runtime offset: {time.time() - START_TIME:.2f}s.")
+        log("Workspace scratch files cleared completely. Exit procedures finalized.")
