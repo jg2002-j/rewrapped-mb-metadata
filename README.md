@@ -2,14 +2,15 @@
 
 # What does this GitHub Workflow produce?
 
-A database download, as small as possible, and optimised for finding metadata of a track by either:
+A database download, as small as possible, and optimised for finding metadata of a track.
 
 # What are the requirements?
 
-- Operate in a free-tier GitHub Workflow once per week/2 weeks
-- Produce a small as possible compressed database
-- A database optimised for lookups by a) streaming link and b) as a fallback, trackname + albumname + artistname
-- Operate in as little time as possible
+1. Operate in a free-tier GitHub Workflow once per week/2 weeks
+2. Produce a database optimised for lookups by a) **streaming link** and b) as a fallback, **trackname + albumname +
+   artistname**
+3. Make the compressed database end result as small as possible
+4. Run the whole workflow in as little time as possible
 
 # What does the database contain?
 
@@ -63,7 +64,9 @@ With MusicBrainz metadata I get:
 
 1. a consistent title, album and artist in terms of casing/spelling etc.
 2. a duration of the track
-3. a way to get album art (release group mbid, queried on metabrainz) and artist images (wikidata id queried on
-   wikidata)
+3. a way to get album art (`release_group_mbid`, queried
+   on [Cover Art Archive](https://musicbrainz.org/doc/Cover_Art_Archive/API#/release-group/{mbid}/)) and artist images (
+   `artist_wikidata_id` queried on
+   [Wikidata](https://www.wikidata.org/wiki/Wikidata:Main_Page))
 4. the ability to group functionally same tracks - release group, which MusicBrainz defines as the concept of a release,
    rather than release which is the various legal/material releases of what is essentially the same album
