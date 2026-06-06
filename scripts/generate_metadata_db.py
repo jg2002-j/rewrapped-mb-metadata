@@ -15,6 +15,7 @@ TEMP_TSV = "temp_extract.tsv"
 
 START_TIME = time.time()
 
+
 def get_tar_path():
     is_prod = os.environ.get("GITHUB_ACTIONS") == "true" or "--prod" in sys.argv
     prod_files = ["mbdump.tar.bz2"]
@@ -25,11 +26,14 @@ def get_tar_path():
         return test_files
     return prod_files
 
+
 TAR_FILES = get_tar_path()
+
 
 def log(message):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] {message}")
+
 
 def init_duckdb():
     log("Initializing DuckDB engine for GitHub Actions environment...")
@@ -48,6 +52,7 @@ def init_duckdb():
 
     log("DuckDB memory and thread configurations successfully applied.")
     return con
+
 
 def init_target_sqlite(db_name):
     log(f"Initializing target SQLite container: {db_name}")
@@ -107,6 +112,7 @@ def init_target_sqlite(db_name):
     conn.close()
     log("Target SQLite schema tables initialized completely.")
 
+
 def stream_tar_to_duckdb(con):
     for tar_name in TAR_FILES:
         if not os.path.exists(tar_name):
@@ -136,7 +142,8 @@ def stream_tar_to_duckdb(con):
                     # Single pass ingestion + cast to prevent double disk utilization
                     cast_exprs = []
                     for col in columns:
-                        if col == "id" or col.endswith("_credit") or col in ["release", "medium", "artist", "entity0", "entity1", "recording"]:
+                        if col == "id" or col.endswith("_credit") or col in ["release", "medium", "artist", "entity0",
+                                                                             "entity1", "recording"]:
                             cast_exprs.append(f"TRY_CAST({col} AS INTEGER) AS {col}")
                         else:
                             cast_exprs.append(col)
@@ -162,6 +169,7 @@ def stream_tar_to_duckdb(con):
                         os.remove(TEMP_TSV)
 
                     log(f"Memory-optimized ingestion complete for {target_table} in {time.time() - duckdb_load_start:.2f}s.")
+
 
 def verify_extracted_counts(con):
     log("Validating ingested DuckDB record volume against official global baselines...")
@@ -194,6 +202,7 @@ def verify_extracted_counts(con):
         else:
             raise AssertionError(f"Data Leakage Detected: Table '{table_name}' only contains {actual_count:,} rows.")
 
+
 def execute_analytics_and_export(con, db_name):
     log("Processing and ranking raw tracks with structural hierarchy rules (Running main SQL analytical query)...")
     analytics_start = time.time()
@@ -207,10 +216,6 @@ def execute_analytics_and_export(con, db_name):
     log("Attaching destination SQLite asset database connection...")
     con.execute("INSTALL sqlite; LOAD sqlite;")
     con.execute(f"ATTACH '{db_name}' AS sqlite_db (TYPE SQLITE);")
-
-    # Disable journaling and synchronization locally to prevent SQLite temp disk explosion
-    con.execute("PRAGMA sqlite_db.journal_mode = OFF;")
-    con.execute("PRAGMA sqlite_db.synchronous = OFF;")
 
     log("Migrating deduplicated metadata entities to SQLite...")
     migration_start = time.time()
@@ -260,6 +265,7 @@ def execute_analytics_and_export(con, db_name):
     con.execute("DROP TABLE IF EXISTS final_canonical_metadata;")
     con.execute("DROP TABLE IF EXISTS winning_link_tracks;")
     con.execute("DROP TABLE IF EXISTS winning_text_tracks;")
+
 
 if __name__ == "__main__":
     log("Starting decoupled, named-schema DuckDB generation engine...")
