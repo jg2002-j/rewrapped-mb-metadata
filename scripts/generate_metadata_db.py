@@ -6,17 +6,30 @@ import sys
 import tarfile
 from datetime import datetime
 
-from queries import BUILD_LINK_LOOKUP_SQL, CREATE_TEXT_HOLDING_TABLE_SQL, GET_CHUNKED_TEXT_LOOKUP_SQL, GET_SQLITE_EXPORT_CHUNK_SQL
+from queries import BUILD_LINK_LOOKUP_SQL, CREATE_TEXT_HOLDING_TABLE_SQL, GET_CHUNKED_TEXT_LOOKUP_SQL, \
+    GET_SQLITE_EXPORT_CHUNK_SQL
 from schema import TABLE_SCHEMAS, TABLE_MAPPING
 
 DB_NAME = "metadata_core.db"
 DUCKDB_TMP = "duckdb_working.db"
 TEMP_TSV = "temp_extract.tsv"
 
-# PROD FILES
-TAR_FILES = ["mbdump.tar.bz2"]
-# TEST FILES
-# TAR_FILES = ["test_mbdump.tar.bz2"]
+
+# ----------------------------
+# TAR SELECTION
+# ----------------------------
+def get_tar_path():
+    is_prod = os.environ.get("GITHUB_ACTIONS") == "true" or "--prod" in sys.argv
+    prod_files = ["mbdump.tar.bz2"]
+    test_files = ["test_mbdump.tar.bz2"]
+    if is_prod:
+        return prod_files
+    if os.path.exists("test_mbdump.tar.bz2"):
+        return test_files
+    return prod_files
+
+
+TAR_FILES = get_tar_path()
 
 
 def log(message):
@@ -158,7 +171,8 @@ def verify_extracted_counts(con):
     }
 
     for table_name, expected_minimum in baselines.items():
-        table_exists = con.execute(f"SELECT 1 FROM information_schema.tables WHERE table_name = '{table_name}';").fetchone()
+        table_exists = con.execute(
+            f"SELECT 1 FROM information_schema.tables WHERE table_name = '{table_name}';").fetchone()
         if not table_exists:
             if is_test_env:
                 log(f"   ⚠️ {table_name}: Missing from test archive environment (Skipped safety count check)")
@@ -179,7 +193,8 @@ def verify_extracted_counts(con):
 
 
 def execute_analytics_and_export(con):
-    required_tables = ["raw_track", "raw_recording", "raw_medium", "raw_release", "raw_release_group", "raw_l_recording_url"]
+    required_tables = ["raw_track", "raw_recording", "raw_medium", "raw_release", "raw_release_group",
+                       "raw_l_recording_url"]
     for t in required_tables:
         exists = con.execute(f"SELECT 1 FROM information_schema.tables WHERE table_name = '{t}';").fetchone()
         if not exists:
