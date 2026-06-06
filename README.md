@@ -2,7 +2,9 @@
 
 # What does this GitHub Workflow produce?
 
-A database download containing all track metadata from [MusicBrainz PostgreSQL Data Dumps](https://metabrainz.org/datasets/postgres-dumps#musicbrainz), optimised for lookups via streaming links
+A database download containing all track metadata
+from [MusicBrainz PostgreSQL Data Dumps](https://metabrainz.org/datasets/postgres-dumps#musicbrainz), optimised for
+lookups via streaming links
 and track/album/artist names.
 
 # What are the requirements?
@@ -71,3 +73,7 @@ With MusicBrainz metadata I get:
    [Wikidata](https://www.wikidata.org/wiki/Wikidata:Main_Page))
 4. the ability to group functionally same tracks - release group, which MusicBrainz defines as the concept of a release,
    rather than release which is the various legal/material releases of what is essentially the same album
+
+# Extra links
+
+https://musicbrainz.org/doc/MusicBrainz_Database/Schema

@@ -1,7 +1,6 @@
 DUCKDB_CLEAN_STR = r"lower(regexp_replace(regexp_replace(trim(COL), '[^\w\s]', '', 'g'), '\s+', ' ', 'g'))"
 
 BUILD_NORMALIZED_PIPELINE_SQL = f"""
-    -- Step 0: Pre-extract and isolate Wikidata mappings to eliminate track-level join explosions
     CREATE TABLE artist_wikidata_map AS
     SELECT 
         lau.entity0 AS artist_id,
@@ -11,7 +10,6 @@ BUILD_NORMALIZED_PIPELINE_SQL = f"""
     WHERE u.url LIKE '%wikidata.org/wiki/Q%'
     GROUP BY 1;
 
-    -- Steps 1 & 2: Calculate clean text priorities and deduplicate immediately
     CREATE TABLE winning_text_tracks AS
     WITH text_priorities AS (
         SELECT 
@@ -47,44 +45,30 @@ BUILD_NORMALIZED_PIPELINE_SQL = f"""
     )
     SELECT track_id, clean_track, clean_album, clean_artist, duration_ms FROM ranked WHERE rn = 1;
 
-    -- Step 3: Choose the absolute best track ID matching each unique streaming link
+    -- Map streaming tracks links to clean target IDs
     CREATE TABLE winning_link_tracks AS
-    WITH ranked AS (
-        SELECT 
-            u.url AS streaming_link,
-            t.id AS track_id,
-            CASE 
-                WHEN COALESCE(rgt.name, 'Unknown') = 'Album' AND (lower(rg.name) LIKE '%deluxe%' OR lower(r.name) LIKE '%deluxe%') THEN 1
-                WHEN COALESCE(rgt.name, 'Unknown') = 'Album' THEN 2
-                WHEN COALESCE(rgt.name, 'Unknown') = 'EP' THEN 3
-                WHEN COALESCE(rgt.name, 'Unknown') = 'Single' THEN 4
-                ELSE 5
-            END AS priority_score,
-            ROW_NUMBER() OVER(PARTITION BY u.url ORDER BY priority_score ASC, t.id ASC) as rn
-        FROM raw_l_recording_url lru
-        JOIN raw_url u ON lru.entity1 = u.id
-        JOIN raw_recording rec ON lru.entity0 = rec.id
-        JOIN raw_track t ON t.recording = rec.id
-        JOIN raw_medium m ON t.medium = m.id
-        JOIN raw_release r ON m.release = r.id
-        JOIN raw_release_group rg ON r.release_group = rg.id
-        LEFT JOIN raw_rg_type rgt ON rg.type = rgt.id
-        WHERE u.url LIKE '%spotify.com%' 
-           OR u.url LIKE '%music.apple.com%' 
-           OR u.url LIKE '%tidal.com%'
-    )
-    SELECT streaming_link, track_id FROM ranked WHERE rn = 1;
+    SELECT DISTINCT
+        u.url AS streaming_url,
+        t.id AS track_id
+    FROM raw_l_recording_url lru
+    JOIN raw_url u ON lru.entity1 = u.id
+    JOIN raw_recording rec ON lru.entity0 = rec.id
+    JOIN raw_track t ON t.recording = rec.id
+    WHERE u.url LIKE '%spotify.com%' 
+       OR u.url LIKE '%music.apple.com%' 
+       OR u.url LIKE '%tidal.com%';
 
-    -- Steps 4 & 5: Map distinct tracks and construct the final canonical metadata table safely
+    -- Combine unique keys to establish the master metadata dataset boundary
+    CREATE TABLE distinct_winning_tracks AS
+    SELECT DISTINCT track_id FROM (
+        SELECT track_id FROM winning_text_tracks
+        UNION DISTINCT
+        SELECT track_id FROM winning_link_tracks
+    );
+
+    -- 1. Construct final_canonical_metadata
     CREATE TABLE final_canonical_metadata AS
-    WITH distinct_winning_tracks AS (
-        SELECT DISTINCT track_id FROM (
-            SELECT track_id FROM winning_text_tracks
-            UNION ALL
-            SELECT track_id FROM winning_link_tracks
-        )
-    ),
-    raw_metadata AS (
+    WITH raw_metadata AS (
         SELECT 
             t.id AS track_id,
             t.name AS track_title,
@@ -116,4 +100,16 @@ BUILD_NORMALIZED_PIPELINE_SQL = f"""
         release_group_mbid, release_group_title, release_group_type, artist_mbid, artist_name, artist_wikidata_id
     FROM raw_metadata
     WHERE rn = 1;
+
+    -- 2. Construct final_link_lookup (Filter out track_ids not preserved in our canonical selection metadata dataset)
+    CREATE TABLE final_link_lookup AS
+    SELECT wlt.streaming_url, wlt.track_id
+    FROM winning_link_tracks wlt
+    WHERE wlt.track_id IN (SELECT track_id FROM final_canonical_metadata);
+
+    -- 3. Construct final_text_lookup (Only retain records matching our exact canonical selections)
+    CREATE TABLE final_text_lookup AS
+    SELECT wtt.clean_track, wtt.clean_album, wtt.clean_artist, wtt.track_id
+    FROM winning_text_tracks wtt
+    WHERE wtt.track_id IN (SELECT track_id FROM final_canonical_metadata);
 """
