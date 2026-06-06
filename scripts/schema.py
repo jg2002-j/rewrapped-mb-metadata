@@ -1,5 +1,5 @@
 # MusicBrainz Core Column Schema Blueprint Definitions
-# Audited and verified against admin/sql/CreateTables.sql
+# Audited and verified against https://github.com/metabrainz/musicbrainz-server/blob/master/admin/sql/CreateTables.sql
 
 TABLE_SCHEMAS = {
     "mbdump/artist": [

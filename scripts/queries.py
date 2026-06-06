@@ -1,33 +1,31 @@
 DUCKDB_CLEAN_STR = r"lower(regexp_replace(regexp_replace(trim(COL), '[^\w\s]', '', 'g'), '\s+', ' ', 'g'))"
 
 BUILD_NORMALIZED_PIPELINE_SQL = f"""
-    -- Step 1: Calculate clean text lookup attributes alongside duration metrics
-    CREATE TABLE text_priorities AS 
-    SELECT 
-        t.id AS track_id,
-        COALESCE(TRY_CAST(t.length AS INTEGER), 0) AS duration_ms,
-        (COALESCE(TRY_CAST(t.length AS INTEGER), 0) / 45000)::INT AS duration_bracket,
-        {DUCKDB_CLEAN_STR.replace('COL', 't.name')} AS clean_track,
-        {DUCKDB_CLEAN_STR.replace('COL', 'r.name')} AS clean_album,
-        {DUCKDB_CLEAN_STR.replace('COL', 'a.name')} AS clean_artist,
-        CASE 
-            WHEN COALESCE(rgt.name, 'Unknown') = 'Album' AND (lower(rg.name) LIKE '%deluxe%' OR lower(r.name) LIKE '%deluxe%') THEN 1
-            WHEN COALESCE(rgt.name, 'Unknown') = 'Album' THEN 2
-            WHEN COALESCE(rgt.name, 'Unknown') = 'EP' THEN 3
-            WHEN COALESCE(rgt.name, 'Unknown') = 'Single' THEN 4
-            ELSE 5
-        END AS priority_score
-    FROM raw_track t
-    JOIN raw_medium m ON t.medium = m.id
-    JOIN raw_release r ON m.release = r.id
-    JOIN raw_release_group rg ON r.release_group = rg.id
-    LEFT JOIN raw_rg_type rgt ON rg.type = rgt.id
-    JOIN raw_artist_credit_name acn ON rg.artist_credit = acn.artist_credit
-    JOIN raw_artist a ON acn.artist = a.id;
-
-    -- Step 2: Deduplicate text keys, but keep distinct duration variations safe
+    -- Steps 1 & 2: Calculate clean text priorities and deduplicate immediately using CTEs
     CREATE TABLE winning_text_tracks AS
-    WITH ranked AS (
+    WITH text_priorities AS (
+        SELECT 
+            t.id AS track_id,
+            COALESCE(TRY_CAST(t.length AS INTEGER), 0) AS duration_ms,
+            (COALESCE(TRY_CAST(t.length AS INTEGER), 0) / 45000)::INT AS duration_bracket,
+            {DUCKDB_CLEAN_STR.replace('COL', 't.name')} AS clean_track,
+            {DUCKDB_CLEAN_STR.replace('COL', 'r.name')} AS clean_album,
+            {DUCKDB_CLEAN_STR.replace('COL', 'a.name')} AS clean_artist,
+            CASE 
+                WHEN COALESCE(rgt.name, 'Unknown') = 'Album' AND (lower(rg.name) LIKE '%deluxe%' OR lower(r.name) LIKE '%deluxe%') THEN 1
+                WHEN COALESCE(rgt.name, 'Unknown') = 'Album' THEN 2
+                WHEN COALESCE(rgt.name, 'Unknown') = 'EP' THEN 3
+                WHEN COALESCE(rgt.name, 'Unknown') = 'Single' THEN 4
+                ELSE 5
+            END AS priority_score
+        FROM raw_track t
+        JOIN raw_medium m ON t.medium = m.id
+        JOIN raw_release r ON m.release = r.id
+        JOIN raw_release_group rg ON r.release_group = rg.id
+        LEFT JOIN raw_rg_type rgt ON rg.type = rgt.id
+        JOIN raw_artist_credit_name acn ON rg.artist_credit = acn.artist_credit
+        JOIN raw_artist a ON acn.artist = a.id
+    ), ranked AS (
         SELECT track_id, clean_track, clean_album, clean_artist, duration_ms,
                ROW_NUMBER() OVER(
                    PARTITION BY clean_track, clean_album, clean_artist, duration_bracket 
@@ -38,8 +36,6 @@ BUILD_NORMALIZED_PIPELINE_SQL = f"""
           AND clean_track != '' AND clean_album != '' AND clean_artist != ''
     )
     SELECT track_id, clean_track, clean_album, clean_artist, duration_ms FROM ranked WHERE rn = 1;
-
-    DROP TABLE text_priorities;
 
     -- Step 3: Choose the absolute best track ID matching each unique streaming link
     CREATE TABLE winning_link_tracks AS
@@ -69,16 +65,15 @@ BUILD_NORMALIZED_PIPELINE_SQL = f"""
     )
     SELECT streaming_link, track_id FROM ranked WHERE rn = 1;
 
-    -- Step 4: Map the distinct tracks that survived either filter
-    CREATE TABLE distinct_winning_tracks AS
-    SELECT DISTINCT track_id FROM (
-        SELECT track_id FROM winning_text_tracks
-        UNION ALL
-        SELECT track_id FROM winning_link_tracks
-    );
-
-    -- Step 5: Gather complete metadata attributes for those specific winners
+    -- Steps 4 & 5: Map distinct tracks and construct the final canonical metadata table directly
     CREATE TABLE final_canonical_metadata AS
+    WITH distinct_winning_tracks AS (
+        SELECT DISTINCT track_id FROM (
+            SELECT track_id FROM winning_text_tracks
+            UNION ALL
+            SELECT track_id FROM winning_link_tracks
+        )
+    )
     SELECT 
         ROW_NUMBER() OVER() AS metadata_id,
         t.id AS track_id,
@@ -104,6 +99,4 @@ BUILD_NORMALIZED_PIPELINE_SQL = f"""
     JOIN raw_artist a ON acn.artist = a.id
     LEFT JOIN raw_l_artist_url lau ON a.id = lau.entity0
     LEFT JOIN raw_url artist_u ON lau.entity1 = artist_u.id AND artist_u.url LIKE '%wikidata%';
-    
-    DROP TABLE distinct_winning_tracks;
 """

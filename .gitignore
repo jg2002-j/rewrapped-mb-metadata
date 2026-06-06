@@ -12,3 +12,6 @@ dryrun/
 *.tsv
 *.wal
 /duckdb_working.db.tmp/
+
+# Other
+/do_not_track/
