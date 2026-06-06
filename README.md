@@ -2,7 +2,8 @@
 
 # What does this GitHub Workflow produce?
 
-A database download, as small as possible, and optimised for finding metadata of a track.
+A database download containing all track metadata from [MusicBrainz PostgreSQL Data Dumps](https://metabrainz.org/datasets/postgres-dumps#musicbrainz), optimised for lookups via streaming links
+and track/album/artist names.
 
 # What are the requirements?
 
