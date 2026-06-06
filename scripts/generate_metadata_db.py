@@ -33,24 +33,16 @@ def log(message):
 
 def init_duckdb():
     log("Initializing DuckDB engine for GitHub Actions environment...")
-
-    # Ensure a clean slate
-    for suffix in ["", ".tmp", ".wal"]:
-        path = f"{DUCKDB_TMP}{suffix}"
-        if os.path.exists(path):
-            if os.path.isdir(path):
-                shutil.rmtree(path, ignore_errors=True)
-            else:
-                os.remove(path)
-
+    if os.path.exists(DUCKDB_TMP):
+        os.remove(DUCKDB_TMP)
     if os.path.exists(".duckdb_tmp"):
         shutil.rmtree(".duckdb_tmp", ignore_errors=True)
 
-    # Inject config directly during connection to prevent ghost .tmp files
-    con = duckdb.connect(DUCKDB_TMP, config={'temp_directory': '.duckdb_tmp'})
+    con = duckdb.connect(DUCKDB_TMP)
 
-    # 4GB leaves ~3GB for OS and Python overhead on free tier
-    con.execute("SET memory_limit='4GB';")
+    # Strictly optimized for 7GB RAM GitHub Runner limits
+    con.execute("SET max_memory='5GB';")
+    con.execute("SET temp_directory='.duckdb_tmp';")
     con.execute("SET threads=2;")
     con.execute("SET preserve_insertion_order=false;")
 
@@ -249,12 +241,7 @@ if __name__ == "__main__":
         sys.exit(1)
     finally:
         db_con.close()
-        for suffix in ["", ".tmp", ".wal"]:
-            path = f"{DUCKDB_TMP}{suffix}"
-            if os.path.exists(path):
-                if os.path.isdir(path):
-                    shutil.rmtree(path, ignore_errors=True)
-                else:
-                    os.remove(path)
+        if os.path.exists(DUCKDB_TMP):
+            os.remove(DUCKDB_TMP)
         if os.path.exists(".duckdb_tmp"):
             shutil.rmtree(".duckdb_tmp", ignore_errors=True)

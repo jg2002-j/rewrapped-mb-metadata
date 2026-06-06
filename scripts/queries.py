@@ -82,23 +82,23 @@ MATERIALIZE_CLEAN_STRINGS_SQL = [
     """
 ]
 
-# Execution via full out-of-core streaming window function, replacing heavy Hash Aggregates
+# Execution via full out-of-core streaming group-by, replacing chunk logic
 BUILD_TEXT_LOOKUP_SQL = """
                         CREATE TABLE duck_text_lookup AS
                         SELECT ct.clean_track,
                                cr.clean_album,
                                ca.clean_artist,
-                               ct.track_title,
-                               ct.duration_ms,
-                               rec.gid                       AS recording_mbid,
-                               cr.album_mbid                 AS album_mbid,
-                               cr.album_title                AS album_title,
-                               rg.gid                        AS release_group_mbid,
-                               rg.name                       AS release_group_title,
-                               COALESCE(rgt.name, 'Unknown') AS release_group_type,
-                               ca.artist_mbid                AS artist_mbid,
-                               ca.artist_name                AS artist_name,
-                               wm.wikidata_id                AS artist_wikidata_id
+                               first(ct.track_title)                AS track_title,
+                               first(ct.duration_ms)                AS duration_ms,
+                               first(rec.gid)                       AS recording_mbid,
+                               first(cr.album_mbid)                 AS album_mbid,
+                               first(cr.album_title)                AS album_title,
+                               first(rg.gid)                        AS release_group_mbid,
+                               first(rg.name)                       AS release_group_title,
+                               first(COALESCE(rgt.name, 'Unknown')) AS release_group_type,
+                               first(ca.artist_mbid)                AS artist_mbid,
+                               first(ca.artist_name)                AS artist_name,
+                               first(wm.wikidata_id)                AS artist_wikidata_id
                         FROM clean_tracks ct
                                  JOIN raw_recording rec ON ct.recording = rec.id
                                  JOIN raw_medium m ON ct.medium = m.id
@@ -107,8 +107,6 @@ BUILD_TEXT_LOOKUP_SQL = """
                                  LEFT JOIN raw_rg_type rgt ON rg.type = rgt.id
                                  JOIN raw_artist_credit_name acn ON rg.artist_credit = acn.artist_credit
                                  JOIN clean_artists ca ON acn.artist = ca.id
-                                 LEFT JOIN wikidata_mapping wm ON ca.id = wm.artist_id QUALIFY ROW_NUMBER() OVER (
-                            PARTITION BY ct.clean_track, cr.clean_album, ca.clean_artist
-                            ORDER BY ct.track_title ASC
-                        ) = 1; \
+                                 LEFT JOIN wikidata_mapping wm ON ca.id = wm.artist_id
+                        GROUP BY ct.clean_track, cr.clean_album, ca.clean_artist; \
                         """
