@@ -148,6 +148,7 @@ def build_test_dump(source_tar, output_tar):
     print("urls           :", len(url_ids))
     print()
 
+    # Included split-out date event dependencies to match target architecture layouts
     filters = {
         "mbdump/release": (0, release_ids),
         "mbdump/medium": (0, medium_ids),
@@ -160,6 +161,8 @@ def build_test_dump(source_tar, output_tar):
         "mbdump/l_recording_url": (2, recording_ids),
         "mbdump/l_artist_url": (2, artist_ids),
         "mbdump/release_group_primary_type": (None, None),
+        "mbdump/release_country": (0, release_ids),
+        "mbdump/release_unknown_country": (0, release_ids),
     }
 
     print(f"Writing {output_tar}")
@@ -181,7 +184,6 @@ def build_test_dump(source_tar, output_tar):
                     newline=""
             ) as tmp:
 
-                # Fix applied here: Added escapechar to safely format rows
                 writer = csv.writer(
                     tmp,
                     delimiter="\t",

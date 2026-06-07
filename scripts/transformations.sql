@@ -4,11 +4,31 @@
 
 -- 1. Compute Canonical Ranking Hierarchy Matrix
 CREATE TABLE temp_canonical_rank AS
-WITH mapped_release_sets AS (SELECT rec.gid                     AS recording_mbid,
-                                    CAST(rec.length AS INTEGER) AS length,
-                                    rg.gid                      AS release_group_mbid,
-                                    rg.name                     AS release_group_title,
-                                    rg_type.name                AS release_group_type,
+WITH release_dates_combined AS (SELECT release, date_year, date_month, date_day
+                                FROM raw_release_country
+                                UNION ALL
+                                SELECT release, date_year, date_month, date_day
+                                FROM raw_release_unknown_country),
+     earliest_dates AS (SELECT release,
+                               MIN(
+                                       COALESCE(
+                                               TRY_CAST(
+                                                       MAKE_DATE(
+                                                               CAST(COALESCE(TRY_CAST(date_year AS INTEGER), 9999) AS INTEGER),
+                                                               CAST(COALESCE(NULLIF(TRY_CAST(date_month AS INTEGER), 0), 1) AS INTEGER),
+                                                               CAST(COALESCE(NULLIF(TRY_CAST(date_day AS INTEGER), 0), 1) AS INTEGER)
+                                                       ) AS DATE
+                                               ),
+                                               '9999-12-31'::DATE
+                                       )
+                               ) AS normalized_release_date
+                        FROM release_dates_combined
+                        GROUP BY release),
+     mapped_release_sets AS (SELECT rec.gid                                                   AS recording_mbid,
+                                    CAST(rec.length AS INTEGER)                               AS length,
+                                    rg.gid                                                    AS release_group_mbid,
+                                    rg.name                                                   AS release_group_title,
+                                    rg_type.name                                              AS release_group_type,
 
                                     -- Scoring Evaluation Weights
                                     CASE CAST(rg_type.name AS TEXT)
@@ -33,26 +53,19 @@ WITH mapped_release_sets AS (SELECT rec.gid                     AS recording_mbi
                                     CASE
                                         WHEN CAST(rg.artist_credit AS INTEGER) = CAST(rec.artist_credit AS INTEGER)
                                             THEN 50
-                                        ELSE 0 END              AS evaluation_score,
+                                        ELSE 0 END                                            AS evaluation_score,
 
-                                    -- Safe Casting explicitly addresses the Coalesce Type Binder Issue
-                                    COALESCE(
-                                            TRY_CAST(
-                                                    MAKE_DATE(
-                                                            CAST(COALESCE(TRY_CAST(r.date_year AS INTEGER), 9999) AS INTEGER),
-                                                            CAST(COALESCE(NULLIF(TRY_CAST(r.date_month AS INTEGER), 0), 1) AS INTEGER),
-                                                            CAST(COALESCE(NULLIF(TRY_CAST(r.date_day AS INTEGER), 0), 1) AS INTEGER)
-                                                    ) AS DATE
-                                            ),
-                                            '9999-12-31'::DATE
-                                    )                           AS normalized_release_date
+                                    COALESCE(erd.normalized_release_date, '9999-12-31'::DATE) AS normalized_release_date
 
                              FROM raw_recording rec
                                       JOIN raw_track t ON t.recording = rec.id
                                       JOIN raw_medium m ON t.medium = m.id
                                       JOIN raw_release r ON m.release = r.id
+                                      LEFT JOIN earliest_dates erd ON r.id = erd.release
                                       LEFT JOIN raw_release_group rg ON r.release_group = rg.id
-                                      LEFT JOIN raw_rg_type rg_type ON rg.type = rg_type.id)
+                                      LEFT JOIN raw_rg_type rg_type ON rg.type = rg_type.id
+                             -- Hard Exclusion Enforced: status = 1 ("Official")
+                             WHERE CAST(r.status AS INTEGER) = 1)
 SELECT recording_mbid,
        length,
        release_group_mbid,

@@ -48,11 +48,10 @@ jobs:
         run: echo "RUN_TS=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
 
       - name: Execute Pipeline Engine
-        run: python process_musicbrainz.py --prod
+        run: python scripts/process_musicbrainz.py --prod
 
       - name: Compress Output Database
         run: |
-          # The database file itself is metadata.db, the compressed archive gets the timestamp label
           zstd -19 metadata.db -o "metadata-${{ steps.timestamp.outputs.RUN_TS }}.db.zst"
 
       - name: Upload Finished Artifacts

@@ -21,12 +21,14 @@ def get_tar_paths():
     return prod_files
 
 
-# Clean map names pulled directly from your structural layout blueprint
+# Adjusted for the multi-table release schema refactoring
 TABLE_MAPPING = {
     "recording": "raw_recording",
     "track": "raw_track",
     "medium": "raw_medium",
     "release": "raw_release",
+    "release_country": "raw_release_country",
+    "release_unknown_country": "raw_release_unknown_country",
     "release_group": "raw_release_group",
     "release_group_primary_type": "raw_rg_type",
     "artist_credit_name": "raw_artist_credit_name",
@@ -41,9 +43,10 @@ TABLE_SCHEMAS = {
     "track": ["id", "gid", "recording", "medium", "position", "number", "name", "artist_credit", "length",
               "edits_pending", "last_updated", "is_data_track"],
     "medium": ["id", "release", "position", "format", "name", "track_count", "edits_pending", "last_updated"],
-    "release": ["id", "gid", "name", "artist_credit", "release_group", "status", "packaging", "country", "language",
-                "script", "date_year", "date_month", "date_day", "barcode", "comment", "edits_pending", "quality",
-                "last_updated"],
+    "release": ["id", "gid", "name", "artist_credit", "release_group", "status", "packaging", "language", "script",
+                "barcode", "comment", "edits_pending", "quality", "last_updated"],
+    "release_country": ["release", "country", "date_year", "date_month", "date_day"],
+    "release_unknown_country": ["release", "date_year", "date_month", "date_day"],
     "release_group": ["id", "gid", "name", "artist_credit", "type", "comment", "edits_pending", "last_updated"],
     "release_group_primary_type": ["id", "name", "parent", "child_order", "description"],
     "artist_credit_name": ["artist_credit", "position", "artist", "name", "join_phrase"],
@@ -80,7 +83,6 @@ def extract_and_stream_to_duckdb(con, archive_path, internal_name):
             pass
     else:
         print(f"Skipping extraction target: {internal_name} (Generating type-safe mock schema)")
-        # Force empty tables to evaluate columns as text strings natively to resolve binder variations
         column_selects = ", ".join([f"CAST(NULL AS VARCHAR) AS {col}" for col in columns])
         con.execute(f"CREATE TABLE {target_table} AS SELECT * FROM (SELECT {column_selects}) WHERE 1=0;")
 
