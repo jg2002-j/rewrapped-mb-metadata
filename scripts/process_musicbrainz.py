@@ -21,45 +21,57 @@ def get_tar_paths():
     return prod_files
 
 
-# Explicit positional definitions to avoid zero-padding variations
+# Clean map names pulled directly from your structural layout blueprint
+TABLE_MAPPING = {
+    "recording": "raw_recording",
+    "track": "raw_track",
+    "medium": "raw_medium",
+    "release": "raw_release",
+    "release_group": "raw_release_group",
+    "release_group_primary_type": "raw_rg_type",
+    "artist_credit_name": "raw_artist_credit_name",
+    "artist": "raw_artist",
+    "url": "raw_url",
+    "l_recording_url": "raw_l_recording_url",
+    "l_artist_url": "raw_l_artist_url"
+}
+
 TABLE_SCHEMAS = {
-    "recording": ["id", "gid", "name", "artist_credit", "length"],
-    "track": ["id", "gid", "recording", "medium", "position", "number", "name", "artist_credit", "length"],
-    "medium": ["id", "release", "position", "format", "name", "track_count"],
+    "recording": ["id", "gid", "name", "artist_credit", "length", "comment", "edits_pending", "last_updated", "video"],
+    "track": ["id", "gid", "recording", "medium", "position", "number", "name", "artist_credit", "length",
+              "edits_pending", "last_updated", "is_data_track"],
+    "medium": ["id", "release", "position", "format", "name", "track_count", "edits_pending", "last_updated"],
     "release": ["id", "gid", "name", "artist_credit", "release_group", "status", "packaging", "country", "language",
-                "date_year", "date_month", "date_day"],
-    "release_group": ["id", "gid", "name", "artist_credit", "type", "comment", "edits_pending"],
-    "release_status": ["id", "name", "description", "gid"],
-    "release_group_primary_type": ["id", "name", "description", "gid"],
+                "script", "date_year", "date_month", "date_day", "barcode", "comment", "edits_pending", "quality",
+                "last_updated"],
+    "release_group": ["id", "gid", "name", "artist_credit", "type", "comment", "edits_pending", "last_updated"],
+    "release_group_primary_type": ["id", "name", "parent", "child_order", "description"],
     "artist_credit_name": ["artist_credit", "position", "artist", "name", "join_phrase"],
     "artist": ["id", "gid", "name", "sort_name", "begin_date_year", "begin_date_month", "begin_date_day",
                "end_date_year", "end_date_month", "end_date_day", "type", "area", "gender", "comment", "edits_pending",
                "last_updated", "ended"],
-    "url": ["id", "gid", "url", "description"],
-    "l_recording_url": ["id", "link", "entity0", "entity1", "edits_pending", "last_updated", "link_order"],
-    "l_artist_url": ["id", "link", "entity0", "entity1", "edits_pending", "last_updated", "link_order"],
-    "link": ["id", "link_type", "begin_date_year", "begin_date_month", "begin_date_day", "end_date_year",
-             "end_date_month", "end_date_day", "attribute_count", "created", "ended"],
-    "link_type": ["id", "parent", "child_order", "gid", "entity_type0", "entity_type1", "name", "description",
-                  "link_phrase", "reverse_phrase", "is_deprecated", "has_attributes", "uuid"]
+    "url": ["id", "gid", "url", "description", "edits_pending", "last_updated"],
+    "l_recording_url": ["id", "link", "entity0", "entity1", "edits_pending", "last_updated"],
+    "l_artist_url": ["id", "link", "entity0", "entity1", "edits_pending", "last_updated"]
 }
 
 
-def extract_and_stream_to_duckdb(con, archive_path, table_name):
-    internal_tar_path = f"mbdump/{table_name}"
+def extract_and_stream_to_duckdb(con, archive_path, internal_name):
+    target_table = TABLE_MAPPING[internal_name]
+    internal_tar_path = f"mbdump/{internal_name}"
     print(f"Isolating {internal_tar_path} from {archive_path}...")
 
     cmd = ["tar", "-xjf", archive_path, internal_tar_path]
     subprocess.run(cmd, check=False)
 
-    columns = TABLE_SCHEMAS[table_name]
-    con.execute(f"DROP TABLE IF EXISTS {table_name};")
+    columns = TABLE_SCHEMAS[internal_name]
+    con.execute(f"DROP TABLE IF EXISTS {target_table};")
 
     if os.path.exists(internal_tar_path):
-        print(f"Streaming text schema directly into memory structures: {table_name}")
+        print(f"Streaming text schema directly into memory structures: {target_table}")
         con.execute(f"""
-            CREATE TABLE {table_name} AS 
-            SELECT * FROM read_csv('{internal_tar_path}', sep='\t', header=False, nullstr='\\N', names={columns})
+            CREATE TABLE {target_table} AS 
+            SELECT * FROM read_csv('{internal_tar_path}', sep='\t', header=False, nullstr='\\N', names={columns}, all_varchar=True)
         """)
         os.remove(internal_tar_path)
         try:
@@ -67,10 +79,10 @@ def extract_and_stream_to_duckdb(con, archive_path, table_name):
         except OSError:
             pass
     else:
-        print(f"Skipping extraction target: {table_name} (Generating mock container layout)")
-        # Safely construct structural layout even with no source file present
-        column_selects = ", ".join([f"NULL AS {col}" for col in columns])
-        con.execute(f"CREATE TABLE {table_name} AS SELECT * FROM (SELECT {column_selects}) WHERE 1=0;")
+        print(f"Skipping extraction target: {internal_name} (Generating type-safe mock schema)")
+        # Force empty tables to evaluate columns as text strings natively to resolve binder variations
+        column_selects = ", ".join([f"CAST(NULL AS VARCHAR) AS {col}" for col in columns])
+        con.execute(f"CREATE TABLE {target_table} AS SELECT * FROM (SELECT {column_selects}) WHERE 1=0;")
 
 
 def cleanup_temp_files():
@@ -120,7 +132,7 @@ def main():
             if not os.path.exists(archive):
                 print(f"Critical execution barrier: File target missing -> {archive}")
                 sys.exit(1)
-            for table in TABLE_SCHEMAS.keys():
+            for table in TABLE_MAPPING.keys():
                 extract_and_stream_to_duckdb(con, archive, table)
 
         con.execute("INSTALL sqlite;")

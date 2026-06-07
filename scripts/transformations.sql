@@ -1,6 +1,5 @@
 -- ============================================================================
--- ALIGNMENT WITH OFFICIAL METABRAINZ SCHEMA REFERENCE MANIFEST
--- Columns cleanly bound via predefined array signatures
+-- ALIGNMENT WITH BLUEPRINT STRUCTURAL MATRIX DEFINITIONS
 -- ============================================================================
 
 -- 1. Compute Canonical Ranking Hierarchy Matrix
@@ -36,25 +35,24 @@ WITH mapped_release_sets AS (SELECT rec.gid                     AS recording_mbi
                                             THEN 50
                                         ELSE 0 END              AS evaluation_score,
 
-                                    -- Date Normalization & Far-Future Substitution Strategy for NULL records
+                                    -- Safe Casting explicitly addresses the Coalesce Type Binder Issue
                                     COALESCE(
-                                            MAKE_DATE(
-                                                    CAST(COALESCE(r.date_year, 9999) AS INTEGER),
-                                                    CAST(COALESCE(NULLIF(r.date_month, 0), 1) AS INTEGER),
-                                                    CAST(COALESCE(NULLIF(r.date_day, 0), 1) AS INTEGER)
+                                            TRY_CAST(
+                                                    MAKE_DATE(
+                                                            CAST(COALESCE(TRY_CAST(r.date_year AS INTEGER), 9999) AS INTEGER),
+                                                            CAST(COALESCE(NULLIF(TRY_CAST(r.date_month AS INTEGER), 0), 1) AS INTEGER),
+                                                            CAST(COALESCE(NULLIF(TRY_CAST(r.date_day AS INTEGER), 0), 1) AS INTEGER)
+                                                    ) AS DATE
                                             ),
                                             '9999-12-31'::DATE
                                     )                           AS normalized_release_date
 
-                             FROM recording rec
-                                      JOIN track t ON t.recording = rec.id
-                                      JOIN medium m ON t.medium = m.id
-                                      JOIN release r ON m.release = r.id
-                                      JOIN release_group rg ON r.release_group = rg.id
-                                      LEFT JOIN release_status rs ON r.status = rs.id
-                                      LEFT JOIN release_group_primary_type rg_type ON rg.type = rg_type.id
-
-                             WHERE CAST(rs.name AS TEXT) = 'Official')
+                             FROM raw_recording rec
+                                      JOIN raw_track t ON t.recording = rec.id
+                                      JOIN raw_medium m ON t.medium = m.id
+                                      JOIN raw_release r ON m.release = r.id
+                                      LEFT JOIN raw_release_group rg ON r.release_group = rg.id
+                                      LEFT JOIN raw_rg_type rg_type ON rg.type = rg_type.id)
 SELECT recording_mbid,
        length,
        release_group_mbid,
@@ -86,15 +84,14 @@ SELECT DISTINCT rec.gid                       AS recording_mbid,
                 CAST(acn.position AS INTEGER) AS position,
                 a.name                        AS artist_name,
                 (SELECT REGEXP_EXTRACT(u.url, '(Q[0-9]+)$', 1)
-                 FROM l_artist_url lau
-                          JOIN url u ON lau.entity1 = u.id
-                          JOIN link l ON lau.link = l.id
+                 FROM raw_l_artist_url lau
+                          JOIN raw_url u ON lau.entity1 = u.id
                  WHERE lau.entity0 = a.id
-                   AND l.link_type = 352
+                   AND CAST(lau.link AS INTEGER) = 352
                  LIMIT 1)                     AS artist_wikidata_id
-FROM recording rec
-         JOIN artist_credit_name acn ON rec.artist_credit = acn.artist_credit
-         JOIN artist a ON acn.artist = a.id
+FROM raw_recording rec
+         JOIN raw_artist_credit_name acn ON rec.artist_credit = acn.artist_credit
+         JOIN raw_artist a ON acn.artist = a.id
 WHERE rec.gid IN (SELECT recording_mbid FROM temp_canonical_rank);
 
 -- Populate Direct URL Fast Link Identifiers
@@ -107,11 +104,10 @@ SELECT DISTINCT REGEXP_EXTRACT(u.url, '([^/:]+)$', 1) AS url_identifier,
                     ELSE 'unknown'
                     END                               AS provider,
                 rec.gid                               AS recording_mbid
-FROM url u
-         JOIN l_recording_url lru ON u.id = lru.entity1
-         JOIN link l ON lru.link = l.id
-         JOIN recording rec ON lru.entity0 = rec.id
-WHERE l.link_type IN (74, 75, 85)
+FROM raw_url u
+         JOIN raw_l_recording_url lru ON u.id = lru.entity1
+         JOIN raw_recording rec ON lru.entity0 = rec.id
+WHERE CAST(lru.link AS INTEGER) IN (74, 75, 85)
   AND rec.gid IN (SELECT recording_mbid FROM temp_canonical_rank);
 
 -- Populate Normalized Full Text Search Mappings
@@ -120,10 +116,10 @@ SELECT DISTINCT LOWER(t.name) AS track_title,
                 LOWER(r.name) AS release_title,
                 LOWER(a.name) AS artist_name,
                 rec.gid       AS recording_mbid
-FROM track t
-         JOIN recording rec ON t.recording = rec.id
-         JOIN medium m ON t.medium = m.id
-         JOIN release r ON m.release = r.id
-         JOIN artist_credit_name acn ON t.artist_credit = acn.artist_credit
-         JOIN artist a ON acn.artist = a.id
-WHERE acn.position = 0;
+FROM raw_track t
+         JOIN raw_recording rec ON t.recording = rec.id
+         JOIN raw_medium m ON t.medium = m.id
+         JOIN raw_release r ON m.release = r.id
+         JOIN raw_artist_credit_name acn ON t.artist_credit = acn.artist_credit
+         JOIN raw_artist a ON acn.artist = a.id
+WHERE CAST(acn.position AS INTEGER) = 0;
