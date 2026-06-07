@@ -1,5 +1,6 @@
 import duckdb
 import os
+import shutil
 import subprocess
 import sys
 
@@ -29,7 +30,6 @@ def extract_and_stream_to_duckdb(con, archive_path, table_name):
 
     if os.path.exists(internal_tar_path):
         print(f"Streaming text schema directly into memory structures: {table_name}")
-        # Dropping table if it exists clears out remnants from old local test failures
         con.execute(f"DROP TABLE IF EXISTS {table_name};")
         con.execute(f"""
             CREATE TABLE {table_name} AS 
@@ -42,58 +42,94 @@ def extract_and_stream_to_duckdb(con, archive_path, table_name):
             pass
     else:
         print(f"Skipping extraction target: {table_name} (Missing in archive context)")
-        # For local test archives, create an empty mock table so the SQL transformations don't blow up
         con.execute(f"DROP TABLE IF EXISTS {table_name};")
         con.execute(f"CREATE TABLE {table_name} AS SELECT * FROM (SELECT NULL AS column00) WHERE 1=0;")
 
 
+def cleanup_temp_files():
+    print("Initiating temporary file cleanup routines...")
+    try:
+        duckdb.close()
+    except Exception:
+        pass
+
+    temp_files = ['engine_runtime.duckdb', 'engine_runtime.duckdb.wal']
+    temp_dirs = ['duckdb_spill_buffer', 'mbdump']
+
+    for f in temp_files:
+        if os.path.exists(f):
+            try:
+                os.remove(f)
+                print(f"Removed temp file: {f}")
+            except Exception as e:
+                print(f"Warning: Could not remove file {f}: {e}")
+
+    for d in temp_dirs:
+        if os.path.exists(d):
+            try:
+                shutil.rmtree(d)
+                print(f"Removed temp directory: {d}")
+            except Exception as e:
+                print(f"Warning: Could not remove directory {d}: {e}")
+
+
 def main():
-    archives = get_tar_paths()
+    # Resolve the absolute path to transformations.sql relative to this script's directory
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    sql_path = os.path.join(script_dir, "transformations.sql")
+
+    # Keep the final database output at the root folder level
     target_sqlite_name = "metadata.db"
 
-    # 1. Clean up old databases to ensure a deterministic local run
     if os.path.exists(target_sqlite_name):
         os.remove(target_sqlite_name)
-    if os.path.exists('engine_runtime.duckdb'):
-        os.remove('engine_runtime.duckdb')
+    cleanup_temp_files()
 
     con = duckdb.connect('engine_runtime.duckdb')
-    con.execute("PRAGMA memory_limit='4GB'")
-    con.execute("PRAGMA temp_directory='duckdb_spill_buffer'")
 
-    required_tables = [
-        "recording", "track", "medium", "release", "release_group",
-        "release_status", "release_group_primary_type",
-        "artist_credit_name", "artist",
-        "url", "l_recording_url", "link", "link_type", "l_artist_url"
-    ]
+    try:
+        con.execute("PRAGMA memory_limit='4GB'")
+        con.execute("PRAGMA temp_directory='duckdb_spill_buffer'")
 
-    for archive in archives:
-        if not os.path.exists(archive):
-            print(f"Critical execution barrier: File target missing -> {archive}")
-            sys.exit(1)
-        for table in required_tables:
-            extract_and_stream_to_duckdb(con, archive, table)
+        required_tables = [
+            "recording", "track", "medium", "release", "release_group",
+            "release_status", "release_group_primary_type",
+            "artist_credit_name", "artist",
+            "url", "l_recording_url", "link", "link_type", "l_artist_url"
+        ]
 
-    con.execute("INSTALL sqlite;")
-    con.execute("LOAD sqlite;")
-    con.execute(f"ATTACH '{target_sqlite_name}' AS target_sqlite (TYPE SQLITE);")
+        archives = get_tar_paths()
+        for archive in archives:
+            if not os.path.exists(archive):
+                print(f"Critical execution barrier: File target missing -> {archive}")
+                sys.exit(1)
+            for table in required_tables:
+                extract_and_stream_to_duckdb(con, archive, table)
 
-    print("Constructing remote destination tables...")
-    initialize_bare_sqlite_schema(con)
+        con.execute("INSTALL sqlite;")
+        con.execute("LOAD sqlite;")
+        con.execute(f"ATTACH '{target_sqlite_name}' AS target_sqlite (TYPE SQLITE);")
 
-    print("Initiating analytical transformation transformations...")
-    if os.path.exists('transformations.sql'):
-        with open('transformations.sql', 'r') as query_file:
-            transformation_queries = query_file.read()
-        con.execute(transformation_queries)
-    else:
-        print("Warning: transformations.sql not found. Skipping data load steps.")
+        print("Constructing remote destination tables...")
+        initialize_bare_sqlite_schema(con)
 
-    print("Data insertions successfully completed. Generating localized fast search indexes...")
-    apply_optimized_indexes(con)
+        print("Initiating analytical transformations...")
+        if os.path.exists(sql_path):
+            with open(sql_path, 'r') as query_file:
+                transformation_queries = query_file.read()
+            con.execute(transformation_queries)
+            print("Transformations completed successfully.")
+        else:
+            print(f"Warning: {sql_path} not found. Skipping data load steps.")
 
-    print("Pipeline compilation routines terminated with explicit success.")
+        print("Generating optimized fast search indexes...")
+        apply_optimized_indexes(con)
+
+        print("Pipeline compilation routines terminated with explicit success.")
+
+    finally:
+        con.close()
+        cleanup_temp_files()
 
 
 def initialize_bare_sqlite_schema(con):
@@ -109,8 +145,7 @@ def initialize_bare_sqlite_schema(con):
                 (
                     recording_mbid     TEXT PRIMARY KEY,
                     release_group_mbid TEXT NOT NULL,
-                    length             INTEGER,
-                    FOREIGN KEY (release_group_mbid) REFERENCES release_group (release_group_mbid)
+                    length             INTEGER
                 );
 
                 CREATE TABLE target_sqlite.recording_artists
@@ -120,7 +155,6 @@ def initialize_bare_sqlite_schema(con):
                     position           INTEGER NOT NULL,
                     artist_name        TEXT    NOT NULL,
                     artist_wikidata_id TEXT,
-                    FOREIGN KEY (recording_mbid) REFERENCES recording (recording_mbid),
                     PRIMARY KEY (recording_mbid, artist_mbid)
                 );
 
@@ -129,7 +163,6 @@ def initialize_bare_sqlite_schema(con):
                     url_identifier TEXT NOT NULL,
                     provider       TEXT,
                     recording_mbid TEXT NOT NULL,
-                    FOREIGN KEY (recording_mbid) REFERENCES recording (recording_mbid),
                     PRIMARY KEY (url_identifier, provider)
                 );
 
@@ -139,16 +172,15 @@ def initialize_bare_sqlite_schema(con):
                     track_title    TEXT NOT NULL,
                     release_title  TEXT NOT NULL,
                     artist_name    TEXT NOT NULL,
-                    recording_mbid TEXT NOT NULL,
-                    FOREIGN KEY (recording_mbid) REFERENCES recording (recording_mbid)
+                    recording_mbid TEXT NOT NULL
                 );
                 """)
 
 
 def apply_optimized_indexes(con):
     con.execute("""
-                CREATE INDEX target_sqlite.idx_text_lookup ON text_lookup (track_title, artist_name);
-                CREATE INDEX target_sqlite.idx_recording_artists ON recording_artists (recording_mbid, position, artist_name, artist_wikidata_id);
+                CREATE INDEX idx_text_lookup ON target_sqlite.text_lookup (track_title, artist_name);
+                CREATE INDEX idx_recording_artists ON target_sqlite.recording_artists (recording_mbid, position, artist_name, artist_wikidata_id);
                 """)
 
 
