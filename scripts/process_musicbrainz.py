@@ -1,6 +1,7 @@
 import duckdb
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 
@@ -71,7 +72,6 @@ def extract_and_stream_to_duckdb(con, archive_path, internal_name):
 
     if os.path.exists(internal_tar_path):
         print(f"Streaming text schema directly into memory structures: {target_table}")
-        # Quadruple escape solves Python-to-DuckDB string parsing translation leak
         con.execute(f"""
             CREATE TABLE {target_table} AS 
             SELECT * FROM read_csv('{internal_tar_path}', sep='\t', header=False, nullstr='\\\\N', names={columns}, all_varchar=True)
@@ -89,11 +89,6 @@ def extract_and_stream_to_duckdb(con, archive_path, internal_name):
 
 def cleanup_temp_files():
     print("Initiating temporary file cleanup routines...")
-    try:
-        duckdb.close()
-    except Exception:
-        pass
-
     temp_files = ['engine_runtime.duckdb', 'engine_runtime.duckdb.wal']
     temp_dirs = ['duckdb_spill_buffer', 'mbdump']
 
@@ -154,12 +149,20 @@ def main():
             print(f"Warning: {sql_path} not found. Skipping data load steps.")
 
         print("Generating optimized fast search indexes...")
-        apply_optimized_indexes(con)
+        # Detach and close DuckDB first to prevent file locks on Windows
+        con.execute("DETACH target_sqlite;")
+        con.close()
+
+        # Build indexes using native Python sqlite3 engine
+        apply_optimized_indexes(target_sqlite_name)
 
         print("Pipeline compilation routines terminated with explicit success.")
 
     finally:
-        con.close()
+        try:
+            con.close()
+        except Exception:
+            pass
         cleanup_temp_files()
 
 
@@ -208,11 +211,17 @@ def initialize_bare_sqlite_schema(con):
                 """)
 
 
-def apply_optimized_indexes(con):
-    con.execute("""
-                CREATE INDEX idx_text_lookup ON target_sqlite.text_lookup (track_title, artist_name);
-                CREATE INDEX idx_recording_artists ON target_sqlite.recording_artists (recording_mbid, position, artist_name, artist_wikidata_id);
-                """)
+def apply_optimized_indexes(sqlite_path):
+    # Connect directly to SQLite file natively to avoid DuckDB binding rules
+    conn = sqlite3.connect(sqlite_path)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_text_lookup ON text_lookup (track_title, artist_name);")
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_recording_artists ON recording_artists (recording_mbid, position, artist_name, artist_wikidata_id);")
+        conn.commit()
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":
