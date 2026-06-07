@@ -14,9 +14,15 @@ WITH release_dates_combined AS (SELECT release, date_year, date_month, date_day
                                        COALESCE(
                                                TRY_CAST(
                                                        MAKE_DATE(
-                                                               CAST(COALESCE(TRY_CAST(date_year AS INTEGER), 9999) AS INTEGER),
-                                                               CAST(COALESCE(NULLIF(TRY_CAST(date_month AS INTEGER), 0), 1) AS INTEGER),
-                                                               CAST(COALESCE(NULLIF(TRY_CAST(date_day AS INTEGER), 0), 1) AS INTEGER)
+                                                               CAST(CASE
+                                                                        WHEN date_year IS NULL OR date_year = '0'
+                                                                            THEN '9999'
+                                                                        ELSE date_year END AS INTEGER),
+                                                               CAST(CASE
+                                                                        WHEN date_month IS NULL OR date_month = '0'
+                                                                            THEN '1'
+                                                                        ELSE date_month END AS INTEGER),
+                                                               CAST(CASE WHEN date_day IS NULL OR date_day = '0' THEN '1' ELSE date_day END AS INTEGER)
                                                        ) AS DATE
                                                ),
                                                '9999-12-31'::DATE
@@ -25,7 +31,7 @@ WITH release_dates_combined AS (SELECT release, date_year, date_month, date_day
                         FROM release_dates_combined
                         GROUP BY release),
      mapped_release_sets AS (SELECT rec.gid                                                   AS recording_mbid,
-                                    CAST(rec.length AS INTEGER)                               AS length,
+                                    TRY_CAST(rec.length AS INTEGER)                           AS length,
                                     rg.gid                                                    AS release_group_mbid,
                                     rg.name                                                   AS release_group_title,
                                     rg_type.name                                              AS release_group_type,
@@ -51,7 +57,7 @@ WITH release_dates_combined AS (SELECT release, date_year, date_month, date_day
                                         ELSE 0
                                         END +
                                     CASE
-                                        WHEN CAST(rg.artist_credit AS INTEGER) = CAST(rec.artist_credit AS INTEGER)
+                                        WHEN rg.artist_credit = rec.artist_credit
                                             THEN 50
                                         ELSE 0 END                                            AS evaluation_score,
 
@@ -64,7 +70,6 @@ WITH release_dates_combined AS (SELECT release, date_year, date_month, date_day
                                       LEFT JOIN earliest_dates erd ON r.id = erd.release
                                       LEFT JOIN raw_release_group rg ON r.release_group = rg.id
                                       LEFT JOIN raw_rg_type rg_type ON rg.type = rg_type.id
-                             -- Hard Exclusion Enforced: status = 1 ("Official")
                              WHERE CAST(r.status AS INTEGER) = 1)
 SELECT recording_mbid,
        length,
@@ -92,16 +97,16 @@ WHERE recording_mbid IS NOT NULL;
 
 -- Populate Artist Matrix Assignments
 INSERT INTO target_sqlite.recording_artists (recording_mbid, artist_mbid, position, artist_name, artist_wikidata_id)
-SELECT DISTINCT rec.gid                       AS recording_mbid,
-                a.gid                         AS artist_mbid,
-                CAST(acn.position AS INTEGER) AS position,
-                a.name                        AS artist_name,
+SELECT DISTINCT rec.gid                           AS recording_mbid,
+                a.gid                             AS artist_mbid,
+                TRY_CAST(acn.position AS INTEGER) AS position,
+                a.name                            AS artist_name,
                 (SELECT REGEXP_EXTRACT(u.url, '(Q[0-9]+)$', 1)
                  FROM raw_l_artist_url lau
                           JOIN raw_url u ON lau.entity1 = u.id
                  WHERE lau.entity0 = a.id
-                   AND CAST(lau.link AS INTEGER) = 352
-                 LIMIT 1)                     AS artist_wikidata_id
+                   AND lau.link = '352'
+                 LIMIT 1)                         AS artist_wikidata_id
 FROM raw_recording rec
          JOIN raw_artist_credit_name acn ON rec.artist_credit = acn.artist_credit
          JOIN raw_artist a ON acn.artist = a.id
@@ -120,7 +125,7 @@ SELECT DISTINCT REGEXP_EXTRACT(u.url, '([^/:]+)$', 1) AS url_identifier,
 FROM raw_url u
          JOIN raw_l_recording_url lru ON u.id = lru.entity1
          JOIN raw_recording rec ON lru.entity0 = rec.id
-WHERE CAST(lru.link AS INTEGER) IN (74, 75, 85)
+WHERE lru.link IN ('74', '75', '85')
   AND rec.gid IN (SELECT recording_mbid FROM temp_canonical_rank);
 
 -- Populate Normalized Full Text Search Mappings

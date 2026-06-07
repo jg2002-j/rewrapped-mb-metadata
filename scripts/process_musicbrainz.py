@@ -21,7 +21,6 @@ def get_tar_paths():
     return prod_files
 
 
-# Adjusted for the multi-table release schema refactoring
 TABLE_MAPPING = {
     "recording": "raw_recording",
     "track": "raw_track",
@@ -53,7 +52,7 @@ TABLE_SCHEMAS = {
     "artist": ["id", "gid", "name", "sort_name", "begin_date_year", "begin_date_month", "begin_date_day",
                "end_date_year", "end_date_month", "end_date_day", "type", "area", "gender", "comment", "edits_pending",
                "last_updated", "ended"],
-    "url": ["id", "gid", "url", "description", "edits_pending", "last_updated"],
+    "url": ["id", "gid", "url", "edits_pending", "last_updated"],
     "l_recording_url": ["id", "link", "entity0", "entity1", "edits_pending", "last_updated"],
     "l_artist_url": ["id", "link", "entity0", "entity1", "edits_pending", "last_updated"]
 }
@@ -72,9 +71,10 @@ def extract_and_stream_to_duckdb(con, archive_path, internal_name):
 
     if os.path.exists(internal_tar_path):
         print(f"Streaming text schema directly into memory structures: {target_table}")
+        # Quadruple escape solves Python-to-DuckDB string parsing translation leak
         con.execute(f"""
             CREATE TABLE {target_table} AS 
-            SELECT * FROM read_csv('{internal_tar_path}', sep='\t', header=False, nullstr='\\N', names={columns}, all_varchar=True)
+            SELECT * FROM read_csv('{internal_tar_path}', sep='\t', header=False, nullstr='\\\\N', names={columns}, all_varchar=True)
         """)
         os.remove(internal_tar_path)
         try:
