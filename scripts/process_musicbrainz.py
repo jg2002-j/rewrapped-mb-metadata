@@ -21,6 +21,30 @@ def get_tar_paths():
     return prod_files
 
 
+# Explicit positional definitions to avoid zero-padding variations
+TABLE_SCHEMAS = {
+    "recording": ["id", "gid", "name", "artist_credit", "length"],
+    "track": ["id", "gid", "recording", "medium", "position", "number", "name", "artist_credit", "length"],
+    "medium": ["id", "release", "position", "format", "name", "track_count"],
+    "release": ["id", "gid", "name", "artist_credit", "release_group", "status", "packaging", "country", "language",
+                "date_year", "date_month", "date_day"],
+    "release_group": ["id", "gid", "name", "artist_credit", "type", "comment", "edits_pending"],
+    "release_status": ["id", "name", "description", "gid"],
+    "release_group_primary_type": ["id", "name", "description", "gid"],
+    "artist_credit_name": ["artist_credit", "position", "artist", "name", "join_phrase"],
+    "artist": ["id", "gid", "name", "sort_name", "begin_date_year", "begin_date_month", "begin_date_day",
+               "end_date_year", "end_date_month", "end_date_day", "type", "area", "gender", "comment", "edits_pending",
+               "last_updated", "ended"],
+    "url": ["id", "gid", "url", "description"],
+    "l_recording_url": ["id", "link", "entity0", "entity1", "edits_pending", "last_updated", "link_order"],
+    "l_artist_url": ["id", "link", "entity0", "entity1", "edits_pending", "last_updated", "link_order"],
+    "link": ["id", "link_type", "begin_date_year", "begin_date_month", "begin_date_day", "end_date_year",
+             "end_date_month", "end_date_day", "attribute_count", "created", "ended"],
+    "link_type": ["id", "parent", "child_order", "gid", "entity_type0", "entity_type1", "name", "description",
+                  "link_phrase", "reverse_phrase", "is_deprecated", "has_attributes", "uuid"]
+}
+
+
 def extract_and_stream_to_duckdb(con, archive_path, table_name):
     internal_tar_path = f"mbdump/{table_name}"
     print(f"Isolating {internal_tar_path} from {archive_path}...")
@@ -28,12 +52,14 @@ def extract_and_stream_to_duckdb(con, archive_path, table_name):
     cmd = ["tar", "-xjf", archive_path, internal_tar_path]
     subprocess.run(cmd, check=False)
 
+    columns = TABLE_SCHEMAS[table_name]
+    con.execute(f"DROP TABLE IF EXISTS {table_name};")
+
     if os.path.exists(internal_tar_path):
         print(f"Streaming text schema directly into memory structures: {table_name}")
-        con.execute(f"DROP TABLE IF EXISTS {table_name};")
         con.execute(f"""
             CREATE TABLE {table_name} AS 
-            SELECT * FROM read_csv_auto('{internal_tar_path}', sep='\t', header=False, nullstr='\\N')
+            SELECT * FROM read_csv('{internal_tar_path}', sep='\t', header=False, nullstr='\\N', names={columns})
         """)
         os.remove(internal_tar_path)
         try:
@@ -41,9 +67,10 @@ def extract_and_stream_to_duckdb(con, archive_path, table_name):
         except OSError:
             pass
     else:
-        print(f"Skipping extraction target: {table_name} (Missing in archive context)")
-        con.execute(f"DROP TABLE IF EXISTS {table_name};")
-        con.execute(f"CREATE TABLE {table_name} AS SELECT * FROM (SELECT NULL AS column00) WHERE 1=0;")
+        print(f"Skipping extraction target: {table_name} (Generating mock container layout)")
+        # Safely construct structural layout even with no source file present
+        column_selects = ", ".join([f"NULL AS {col}" for col in columns])
+        con.execute(f"CREATE TABLE {table_name} AS SELECT * FROM (SELECT {column_selects}) WHERE 1=0;")
 
 
 def cleanup_temp_files():
@@ -74,11 +101,8 @@ def cleanup_temp_files():
 
 
 def main():
-    # Resolve the absolute path to transformations.sql relative to this script's directory
     script_dir = os.path.dirname(os.path.abspath(__file__))
     sql_path = os.path.join(script_dir, "transformations.sql")
-
-    # Keep the final database output at the root folder level
     target_sqlite_name = "metadata.db"
 
     if os.path.exists(target_sqlite_name):
@@ -91,19 +115,12 @@ def main():
         con.execute("PRAGMA memory_limit='4GB'")
         con.execute("PRAGMA temp_directory='duckdb_spill_buffer'")
 
-        required_tables = [
-            "recording", "track", "medium", "release", "release_group",
-            "release_status", "release_group_primary_type",
-            "artist_credit_name", "artist",
-            "url", "l_recording_url", "link", "link_type", "l_artist_url"
-        ]
-
         archives = get_tar_paths()
         for archive in archives:
             if not os.path.exists(archive):
                 print(f"Critical execution barrier: File target missing -> {archive}")
                 sys.exit(1)
-            for table in required_tables:
+            for table in TABLE_SCHEMAS.keys():
                 extract_and_stream_to_duckdb(con, archive, table)
 
         con.execute("INSTALL sqlite;")
