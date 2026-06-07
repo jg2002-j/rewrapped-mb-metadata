@@ -1,0 +1,45 @@
+name: Build MusicBrainz Analytics Database
+
+on:
+  schedule:
+    - cron: '33 3 * * 3'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Maximize Build Space
+        uses: easimon/maximize-build-space@master
+        with:
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y zstd curl tar
+          pip install duckdb requests
+
+      - name: Execute Pipeline
+        run: python process_musicbrainz.py
+
+      - name: Compress Output Database
+        run: zstd -19 metadata.db -o metadata.db.zst
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: metadata
+          path: metadata.db.zst
+          retention-days: 7
