@@ -29,6 +29,8 @@ def extract_and_stream_to_duckdb(con, archive_path, table_name):
 
     if os.path.exists(internal_tar_path):
         print(f"Streaming text schema directly into memory structures: {table_name}")
+        # Dropping table if it exists clears out remnants from old local test failures
+        con.execute(f"DROP TABLE IF EXISTS {table_name};")
         con.execute(f"""
             CREATE TABLE {table_name} AS 
             SELECT * FROM read_csv_auto('{internal_tar_path}', sep='\t', header=False, nullstr='\\N')
@@ -40,15 +42,20 @@ def extract_and_stream_to_duckdb(con, archive_path, table_name):
             pass
     else:
         print(f"Skipping extraction target: {table_name} (Missing in archive context)")
+        # For local test archives, create an empty mock table so the SQL transformations don't blow up
+        con.execute(f"DROP TABLE IF EXISTS {table_name};")
+        con.execute(f"CREATE TABLE {table_name} AS SELECT * FROM (SELECT NULL AS column00) WHERE 1=0;")
 
 
 def main():
     archives = get_tar_paths()
     target_sqlite_name = "metadata.db"
 
-    # Remove older local database runs if they exist to start fresh
+    # 1. Clean up old databases to ensure a deterministic local run
     if os.path.exists(target_sqlite_name):
         os.remove(target_sqlite_name)
+    if os.path.exists('engine_runtime.duckdb'):
+        os.remove('engine_runtime.duckdb')
 
     con = duckdb.connect('engine_runtime.duckdb')
     con.execute("PRAGMA memory_limit='4GB'")
@@ -58,7 +65,7 @@ def main():
         "recording", "track", "medium", "release", "release_group",
         "release_status", "release_group_primary_type",
         "artist_credit_name", "artist",
-        "url", "l_recording_url", "link", "link_type"
+        "url", "l_recording_url", "link", "link_type", "l_artist_url"
     ]
 
     for archive in archives:
@@ -90,7 +97,6 @@ def main():
 
 
 def initialize_bare_sqlite_schema(con):
-    # Added target_sqlite. explicit prefixing to reference schemas correctly
     con.execute("""
                 CREATE TABLE target_sqlite.release_group
                 (

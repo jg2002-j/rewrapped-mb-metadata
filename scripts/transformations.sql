@@ -17,7 +17,7 @@ WITH mapped_release_sets AS (SELECT rec.column01                                
                                     rg_type.column01                                        AS release_group_type,
 
                                     -- Scoring Evaluation Weights
-                                    CASE rg_type.column01
+                                    CASE CAST(rg_type.column01 AS TEXT)
                                         WHEN 'Album' THEN 1000
                                         WHEN 'EP' THEN 900
                                         WHEN 'Single' THEN 800
