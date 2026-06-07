@@ -2,8 +2,8 @@ name: Build MusicBrainz Analytics Database
 
 on:
   schedule:
-    - cron: '33 3 * * 3'
-  workflow_dispatch:
+    - cron: '33 3 * * 3' # Every Wednesday at 03:33 AM UTC
+  workflow_dispatch: # Allow manual execution
 
 jobs:
   build:
@@ -26,20 +26,40 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install Dependencies
+      - name: Install System and Python Dependencies
         run: |
           sudo apt-get update && sudo apt-get install -y zstd curl tar
-          pip install duckdb requests
+          pip install duckdb
 
-      - name: Execute Pipeline
-        run: python process_musicbrainz.py
+      - name: Download MusicBrainz Cloud Dumps
+        run: |
+          echo "Resolving the latest weekly export directory name..."
+          LATEST_FOLDER=$(curl -sL "https://data.musicbrainz.org/pub/musicbrainz/data/fullexport/LATEST")
+          echo "Targeting active timestamp folder: $LATEST_FOLDER"
+          
+          echo "Streaming data packages into workspace..."
+          curl -SLf "https://ftp.musicbrainz.org/pub/musicbrainz/data/fullexport/${LATEST_FOLDER}/mbdump.tar.bz2" \
+            -o mbdump.tar.bz2
+          
+          echo "Downloads completed successfully."
+
+      - name: Generate Runtime Timestamp
+        id: timestamp
+        run: echo "RUN_TS=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
+
+      - name: Execute Pipeline Engine
+        env:
+          TARGET_TIMESTAMP: ${{ steps.timestamp.outputs.RUN_TS }}
+        run: python process_musicbrainz.py --prod
 
       - name: Compress Output Database
-        run: zstd -19 metadata.db -o metadata.db.zst
+        run: |
+          DB_NAME="metadata-${{ steps.timestamp.outputs.RUN_TS }}.db"
+          zstd -19 "$DB_NAME" -o "${DB_NAME}.zst"
 
-      - name: Upload Artifact
+      - name: Upload Finished Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: metadata
-          path: metadata.db.zst
-          retention-days: 7
+          name: metadata-${{ steps.timestamp.outputs.RUN_TS }}
+          path: metadata-${{ steps.timestamp.outputs.RUN_TS }}.db.zst
+          retention-days: 14

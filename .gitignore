@@ -17,3 +17,4 @@ dryrun/
 
 # Other
 /do_not_track/
+!test_mbdump.tar.bz2
