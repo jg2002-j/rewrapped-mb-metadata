@@ -1,6 +1,6 @@
 # README
 
-# What does this Workflow do:
+# What is this workflow for?
 
 Using MusicBrainz database dump, finds and defines a single "canonical" album concept / release group for every single
 track/recording. The algorithm here prefers most complete release format then the earliest within that format. It then
@@ -95,16 +95,7 @@ Return highest-ranking Release Group
 
 #### Step 1: Hard exclusions
 
-Immediately reject release groups that are:
-
-* secondary types contains:
-* Compilation
-* Live
-* Remix
-* DJ-mix
-* Mixtape/Street
-
-Also reject: `release.status != Official`
+Reject: `release.status != Official`
 
 #### Step 2: Base score by primary type
 
@@ -123,6 +114,11 @@ Something like:
 | Spokenword         | 200   |
 | Interview          | 100   |
 | Demo               | 50    |
+| Live               | -1000 |
+| Remix              | -1100 |
+| DJ-mix             | -1200 |
+| Mixtape/Street     | -1300 |
+| Compilation        | -1400 |
 
 #### Step 3: Bonus points
 
@@ -130,18 +126,19 @@ Something like:
 
 #### Step 4: Earliest release date
 
+When sorting by the earliest release date in DuckDB, a NULL value can completely break the ranking depending on how
+NULLS FIRST/LAST is configured.
+
+- Normalize your dates during extraction.
+- For partial dates like `1978`, pad them to `1978-01-01`.
+- For NULL dates, use a coalesce strategy to treat them as far-future dates (e.g.,
+  `COALESCE(release_date, '9999-12-31')`) so they never accidentally win against a known release date.
+
 Earlier release date wins
 
 #### Step 5: Deterministic MBID tie-break
 
 lowest MBID lexicographically
-
-#### Notes:
-
-- The downstream service would still keep the original album associated with that specific play, for more accurate
-  information. It would just include an extra field: release group, allowing for more useful statistics.
-- If filtering removes all candidates: Ignore exclusions and choose the highest-scoring release group from the original
-  candidate set.
 
 # Output
 
@@ -174,37 +171,39 @@ create table release_group --simplified down into a single canonical release gro
 
 create table recording
 (
+    length             integer, --average track length for this recording, need this in downstream service
     recording_mbid     text primary key,
     release_group_mbid text not null,
-    length             integer, --average track length for this recording, need this in downstream service
     foreign key (release_group_mbid) references release_group (release_group_mbid)
 );
 
 create table recording_artists
 (
-    position           integer not null, -- 1 = primary artist
+    position           integer not null,                -- 1 = primary artist
     recording_mbid     text    not null,
     artist_mbid        text    not null,
-    artist_wikidata_id text,             --need this for artist art lookup
+    artist_name        text    not null collate nocase, --need for full artist credits in downstream service
+    artist_wikidata_id text,                            --need this for artist art lookup
     foreign key (recording_mbid) references recording (recording_mbid),
     primary key (recording_mbid, artist_mbid)
 );
 
 create table link_lookup
 (
-    url            text primary key,
-    provider       text, --spotify, applemusic, tidal, etc.
+    url_identifier text not null, --strip urls of domains here so lookups become efficient via index, e.g. https://open.spotify.com/track/273QnyCvJB65rScHJ1nPZb to just 273QnyCvJB65rScHJ1nPZb
+    provider       text,          --spotify, applemusic, tidal, etc.
     recording_mbid text not null,
-    foreign key (recording_mbid) references recording (recording_mbid)
+    foreign key (recording_mbid) references recording (recording_mbid),
+    primary key (url_identifier, provider)
 );
 
 create table text_lookup --the fallback text lookup, equivalent to every track appearance on every release
 (
     id             integer primary key,
-    --keep these separate so i can search by all/some of them, add collate nocase so indexes aren't case sensitive
-    track_title    text not null collate nocase,
-    release_title  text not null collate nocase,
-    artist_name    text not null collate nocase, --primary artist only, joins for more artist information
+    --keep these separate so i can search by all/some of them, normalise before insert
+    track_title    text not null,
+    release_title  text not null,
+    artist_name    text not null, --primary artist only, joins for more artist information
     --
     recording_mbid text not null,
     foreign key (recording_mbid) references recording (recording_mbid)
@@ -218,32 +217,65 @@ create table text_lookup --the fallback text lookup, equivalent to every track a
 - There will be 1 row in `release group` for 1 to n rows in `recording` - this will be determined using
   the [above logic](#logic-for-determining-canonical-release-group)
 
-# Needed Indexes
+# Additional Needed Indexes
+
+* Primary key indexes are created out of the box, so aren't needed to be manually created after
 
 ```sql
-create index idx_recording_lookup
-    on link_lookup (url);
-
-create index idx_text_lookup
-    on text_lookup (track_title, artist_name, release_title, recording_mbid);
-
-create index idx_recording_release_group
-    on recording (release_group_mbid);
+create index idx_text_lookup on text_lookup (track_title, artist_name); --not indexing all 4 columns to save space
+create index idx_recording_artists on recording_artists (recording_mbid, position, artist_name, artist_wikidata_id);
 ```
+
+# What does the downstream service need?
+
+1. **Recording length** - used to learn the duration in ms of a track
+2. **Release group title** - this is the "canonical" album concept/release group
+3. **Release group MBID** - used to fetch album artwork
+4. **Primary artist wikidata ID** - used to fetch the (primary) artist image
+5. **Additional artist names** - Used to flesh out the credits of a song, as Spotify Extended Streaming History by
+   default only includes the primary artist
+
+It will find these values by:
+
+1. URL lookup - strip domain out of both this service URLs and the user's listen URL, then use an exact match on the url
+   and the provider
+2. Failing that, a text-based lookup - normalise the text on `track_title`, `release_title` and `artist_name` and then
+   match to user's listen values
 
 # Extra links
 
-https://musicbrainz.org/doc/MusicBrainz_Database/Schema
-https://github.com/metabrainz/musicbrainz-server/blob/master/admin/sql/CreateTables.sql
+- https://musicbrainz.org/doc/MusicBrainz_Database/Schema
+- https://github.com/metabrainz/musicbrainz-server/blob/master/admin/sql/CreateTables.sql
 
 # Further notes
 
-- The DuckDB processing script needs to traverse the relationship graph: `URL → Release → Medium → Track → Recording`:
-  the source of those URLs during your DuckDB processing must pull from the Release-level relationships.
+- Include GitHub Action like `easimon/maximize-build-space` at the very start of the workflow to remove pre-installed
+  .NET, Android, and Haskell runtimes. This will free up roughly 30GB–35GB of extra space.
+- Use a script to extract only the specific table files that are needed (recording, release, track, etc.) one by one,
+  stream them directly into DuckDB tables, and immediately delete the source text file before moving to the next one.
+- Explicitly configure DuckDB’s memory limit and spilling options at the start of the script.
+- The DuckDB processing script needs to traverse the relationship graph: `[url] ── via l_recording_url ──> [recording]`:
+    - `url`: Contains the actual target string (e.g., https://open.spotify.com/track/...)
+    - `l_recording_url`: The entity-to-entity link table mapping recording IDs to url IDs
+    - `link / link_type`: To filter out only the streaming-service relationship types (e.g. "stream for free" or "
+      purchase for download")
 - No vacuum on final database since that'll require double the amount of storage, and compression will achieve a similar
   effect anyway
 - Use DuckDB or equivalent to stream the MusicBrainz databases without needing to use Postgres which would dramatically
   increase storage use
-- Normalisation on the `text_lookup` table would be done downstream, so the same normalisation algorithm can be applied
-  to this text as it can be from the user's streaming history fields
+- Strip domains out of urls in this service, as using a `like '%something%'` match breaks the indexing completely. On a
+  user's downloaded history, each service will have their urls in a set format, e.g. Spotify links are always
+  `spotify:track:[id]` and they should be stripped down too.
+- Normalisation on the `text_lookup` table would be done before inserting, as SQLite’s built-in NOCASE collation only
+  handles 7-bit ASCII characters - meaning texts with special characters won't be treated case-insensitive. So, the text
+  must be normalised beforehand so text matching becomes a highly efficient, byte-for-byte exact comparison (=), keeping
+  lookup speeds incredibly fast.
+    - Ensure the same normalisation algorithm is applied downstream to the user's streaming history fields, so text
+      lookup works
 - Text lookups on downstream service must be done track, then artist, then album, the order matches the created index.
+  `release_title` and `recording_mbid` aren't indexed as this saves space: Even without release_title in the index,
+  filtering down millions of records by the combination of Track Title + Artist Name usually narrows the search results
+  down to just 1–3 rows. SQLite can then scan those remaining rows on disk to check the release_title instantly,
+  preserving fast performance while saving massive amounts of disk space.
+- The downstream service would still keep the original album associated with that specific play, for more accurate
+  information. It would just include an extra field: release group, allowing for more useful statistics.
