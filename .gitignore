@@ -9,12 +9,15 @@ dryrun/
 
 # Pipeline Output Databases & Temporary Files
 *.db
+*.db.zst
 *.tsv
 *.wal
-/duckdb_working.db.tmp/
-/.duckdb_tmp/
-/metadata_core.db-journal
+*.duckdb
+duckdb_spill_buffer/
+engine_runtime.duckdb*
 
 # Other
 /do_not_track/
+
+# Do track
 !test_mbdump.tar.bz2

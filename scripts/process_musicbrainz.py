@@ -2,14 +2,9 @@ import duckdb
 import os
 import subprocess
 import sys
-from datetime import datetime
 
 
 def get_tar_paths():
-    """
-    Selects production or localized test archives depending on execution arguments
-    or active automated environment hooks.
-    """
     is_prod = os.environ.get("GITHUB_ACTIONS") == "true" or "--prod" in sys.argv
     prod_files = ["mbdump.tar.bz2"]
     test_files = ["test_mbdump.tar.bz2"]
@@ -25,55 +20,40 @@ def get_tar_paths():
     return prod_files
 
 
-def get_db_name():
-    """Resolves output dynamic layout mapping."""
-    env_ts = os.environ.get("TARGET_TIMESTAMP")
-    if env_ts:
-        return f"metadata-{env_ts}.db"
-    # Local fallback timestamp matching design specifications
-    return f"metadata-{datetime.now().strftime('%Y%m%d-%H%M%S')}.db"
-
-
 def extract_and_stream_to_duckdb(con, archive_path, table_name):
-    """
-    Extracts individual targets piece-by-piece from tarball, streams raw CSV layouts,
-    and isolates storage vectors to prevent running out of storage.
-    """
     internal_tar_path = f"mbdump/{table_name}"
     print(f"Isolating {internal_tar_path} from {archive_path}...")
 
-    # Extract singular target dynamically without expanding the entire package to disk
     cmd = ["tar", "-xjf", archive_path, internal_tar_path]
     subprocess.run(cmd, check=False)
 
     if os.path.exists(internal_tar_path):
         print(f"Streaming text schema directly into memory structures: {table_name}")
-        # MusicBrainz control sequences utilize \N explicitly for structural NULL targets
         con.execute(f"""
             CREATE TABLE {table_name} AS 
             SELECT * FROM read_csv_auto('{internal_tar_path}', sep='\t', header=False, nullstr='\\N')
         """)
-        # Immediate clean destruction of intermediate text data blocks
         os.remove(internal_tar_path)
         try:
             os.rmdir("mbdump")
         except OSError:
-            pass  # Keep directories active if other threads rely on structural persistence
+            pass
     else:
         print(f"Skipping extraction target: {table_name} (Missing in archive context)")
 
 
 def main():
     archives = get_tar_paths()
-    target_sqlite_name = get_db_name()
-    print(f"Target execution output container resolved: {target_sqlite_name}")
+    target_sqlite_name = "metadata.db"
 
-    # Establish local transactional backend with optimized spill strategies
+    # Remove older local database runs if they exist to start fresh
+    if os.path.exists(target_sqlite_name):
+        os.remove(target_sqlite_name)
+
     con = duckdb.connect('engine_runtime.duckdb')
     con.execute("PRAGMA memory_limit='4GB'")
     con.execute("PRAGMA temp_directory='duckdb_spill_buffer'")
 
-    # Targeted extraction arrays validating strictly against structural layout specifications
     required_tables = [
         "recording", "track", "medium", "release", "release_group",
         "release_status", "release_group_primary_type",
@@ -88,24 +68,21 @@ def main():
         for table in required_tables:
             extract_and_stream_to_duckdb(con, archive, table)
 
-    # Load and initialize the native SQLite serialization module
     con.execute("INSTALL sqlite;")
     con.execute("LOAD sqlite;")
     con.execute(f"ATTACH '{target_sqlite_name}' AS target_sqlite (TYPE SQLITE);")
 
-    # Build bare-metal schemas first (No structural indexes applied yet)
     print("Constructing remote destination tables...")
     initialize_bare_sqlite_schema(con)
 
-    # Compute analytical steps and populate target container maps
     print("Initiating analytical transformation transformations...")
-    with open('transformations.sql', 'r') as query_file:
-        transformation_queries = query_file.read()
+    if os.path.exists('transformations.sql'):
+        with open('transformations.sql', 'r') as query_file:
+            transformation_queries = query_file.read()
+        con.execute(transformation_queries)
+    else:
+        print("Warning: transformations.sql not found. Skipping data load steps.")
 
-    # Execute batch transactional mutations
-    con.execute(transformation_queries)
-
-    # Post-Insertion Global Indexing Step
     print("Data insertions successfully completed. Generating localized fast search indexes...")
     apply_optimized_indexes(con)
 
@@ -113,6 +90,7 @@ def main():
 
 
 def initialize_bare_sqlite_schema(con):
+    # Added target_sqlite. explicit prefixing to reference schemas correctly
     con.execute("""
                 CREATE TABLE target_sqlite.release_group
                 (

@@ -3,7 +3,7 @@ name: Build MusicBrainz Analytics Database
 on:
   schedule:
     - cron: '33 3 * * 3' # Every Wednesday at 03:33 AM UTC
-  workflow_dispatch: # Allow manual execution
+  workflow_dispatch:
 
 jobs:
   build:
@@ -48,14 +48,12 @@ jobs:
         run: echo "RUN_TS=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
 
       - name: Execute Pipeline Engine
-        env:
-          TARGET_TIMESTAMP: ${{ steps.timestamp.outputs.RUN_TS }}
         run: python process_musicbrainz.py --prod
 
       - name: Compress Output Database
         run: |
-          DB_NAME="metadata-${{ steps.timestamp.outputs.RUN_TS }}.db"
-          zstd -19 "$DB_NAME" -o "${DB_NAME}.zst"
+          # The database file itself is metadata.db, the compressed archive gets the timestamp label
+          zstd -19 metadata.db -o "metadata-${{ steps.timestamp.outputs.RUN_TS }}.db.zst"
 
       - name: Upload Finished Artifacts
         uses: actions/upload-artifact@v4
