@@ -2,6 +2,10 @@ import os
 import shutil
 import subprocess
 import sys
+import logging
+import time
+
+logger = logging.getLogger("pipeline_engine")
 
 TABLE_MAPPING = {
     "recording": "raw_recording",
@@ -47,13 +51,13 @@ def get_tar_paths():
     test_files = ["test_mbdump.tar.bz2"]
 
     if is_prod:
-        print("Pipeline running in PRODUCTION context.")
+        logger.info("Pipeline context resolved: [PRODUCTION ENVIRONMENT]")
         return prod_files
     if os.path.exists("test_mbdump.tar.bz2"):
-        print("Pipeline running in LOCAL TEST context using test_mbdump.tar.bz2.")
+        logger.info("Pipeline context resolved: [LOCAL TESTING RUN] via test_mbdump.tar.bz2")
         return test_files
 
-    print("Defaulting to standard production naming layout locally.")
+    logger.info("Defaulting execution naming format layout to standard production naming.")
     return prod_files
 
 
@@ -61,24 +65,36 @@ def extract_and_stream_to_duckdb(con, archive_path, internal_name):
     """Streams data straight out of target tarball entries into active memory tables."""
     target_table = TABLE_MAPPING[internal_name]
     internal_tar_path = f"mbdump/{internal_name}"
-    print(f"Isolating {internal_tar_path} from {archive_path}...")
 
-    # Added check=True: Extraction failures act as a hard kill switch
+    logger.info(f" -> Shell calling: Isolating file entry '{internal_tar_path}' via sub-shell streaming payload...")
+
+    tar_start = time.time()
     cmd = ["tar", "-xjf", archive_path, internal_tar_path]
-    subprocess.run(cmd, check=True)
+
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        logger.info(f" -> Tar execution extraction confirmed ok. Action time: {time.time() - tar_start:.2f}s")
+    except subprocess.CalledProcessError as err:
+        logger.error(f"CRITICAL: Tar shell tracking code error output: {err.stderr.decode().strip()}")
+        raise err
 
     columns = TABLE_SCHEMAS[internal_name]
     con.execute(f"DROP TABLE IF EXISTS {target_table};")
 
     if not os.path.exists(internal_tar_path):
-        print(f"Critical execution barrier: Failed to locate {internal_tar_path} after extraction.")
+        logger.critical(f"FATAL EXCEPTION: Target payload vanished or unreadable at path: {internal_tar_path}")
         sys.exit(1)
 
-    print(f"Streaming text schema directly into memory structures: {target_table}")
+    logger.info(f" -> Parsing flat TSV vectors into relational columns for table: '{target_table}'...")
+    parse_start = time.time()
+
     con.execute(f"""
         CREATE TABLE {target_table} AS 
         SELECT * FROM read_csv('{internal_tar_path}', sep='\t', header=False, nullstr='\\N', names={columns}, all_varchar=True)
     """)
+
+    logger.info(f" -> Ingestion stream mapping complete. Row count: {con.execute(f'SELECT COUNT(*) FROM {target_table}').fetchone()[0]}. Ingestion time: {time.time() - parse_start:.2f}s")
+
     os.remove(internal_tar_path)
     try:
         os.rmdir("mbdump")
@@ -88,7 +104,7 @@ def extract_and_stream_to_duckdb(con, archive_path, internal_name):
 
 def cleanup_temp_files():
     """Sweeps pipeline engine disk cache allocations cleanly."""
-    print("Initiating temporary file cleanup routines...")
+    logger.info("Running disk buffer cache purges...")
     temp_files = ['engine_runtime.duckdb', 'engine_runtime.duckdb.wal']
     temp_dirs = ['duckdb_spill_buffer', 'mbdump']
 
@@ -96,14 +112,14 @@ def cleanup_temp_files():
         if os.path.exists(f):
             try:
                 os.remove(f)
-                print(f"Removed temp file: {f}")
+                logger.info(f" -> Purged temporary database file: {f}")
             except Exception as e:
-                print(f"Warning: Could not remove file {f}: {e}")
+                logger.warning(f" -> Warning: Execution context lock encountered when purging file {f}: {e}")
 
     for d in temp_dirs:
         if os.path.exists(d):
             try:
                 shutil.rmtree(d)
-                print(f"Removed temp directory: {d}")
+                logger.info(f" -> Purged temporary directory space: {d}")
             except Exception as e:
-                print(f"Warning: Could not remove directory {d}: {e}")
+                logger.warning(f" -> Warning: Execution context lock encountered when purging directory {d}: {e}")

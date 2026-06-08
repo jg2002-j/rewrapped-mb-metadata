@@ -1,7 +1,12 @@
 import sqlite3
+import logging
+import time
+
+logger = logging.getLogger("pipeline_engine")
 
 def initialize_bare_sqlite_schema(con):
     """Creates the analytical table space structures inside the target SQLite database."""
+    logger.info(" -> Transmitting core CREATE TABLE DDL queries across attachment link...")
     con.execute("""
                 CREATE TABLE target_sqlite.release_group
                 (
@@ -50,12 +55,28 @@ def initialize_bare_sqlite_schema(con):
 
 def apply_optimized_indexes(sqlite_path):
     """Establishes traditional performance indexing targets."""
+    logger.opening_index = time.time()
+    logger.info(f"Opening independent atomic write channel to SQLite database: {sqlite_path}")
     conn = sqlite3.connect(sqlite_path)
     try:
         cursor = conn.cursor()
+
+        logger.info(" -> Building index Tree space: [idx_text_lookup] on text_lookup(track_title, artist_name)...")
+        t_start = time.time()
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_text_lookup ON text_lookup (track_title, artist_name);")
+        logger.info(f" -> Done. Time: {time.time() - t_start:.2f}s")
+
+        logger.info(" -> Building index Tree space: [idx_recording_artists_lookup] on recording_artists(recording_mbid, artist_mbid)...")
+        t_start = time.time()
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_recording_artists_lookup ON recording_artists (recording_mbid, artist_mbid);")
+        logger.info(f" -> Done. Time: {time.time() - t_start:.2f}s")
+
+        logger.info(" -> Building index Tree space: [idx_recording_artists_details] on recording_artists(position, artist_name, artist_wikidata_id)...")
+        t_start = time.time()
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_recording_artists_details ON recording_artists (position, artist_name, artist_wikidata_id);")
+        logger.info(f" -> Done. Time: {time.time() - t_start:.2f}s")
+
+        logger.info("Committing structural tree alterations to disk headers...")
         conn.commit()
     finally:
         conn.close()
