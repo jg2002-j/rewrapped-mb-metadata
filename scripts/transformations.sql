@@ -1,7 +1,3 @@
--- ============================================================================
--- ALIGNMENT WITH BLUEPRINT STRUCTURAL MATRIX DEFINITIONS
--- ============================================================================
-
 CREATE TABLE temp_canonical_rank AS
 WITH release_dates_combined AS (SELECT release, date_year, date_month, date_day
                                 FROM raw_release_country
@@ -78,6 +74,13 @@ FROM (SELECT *,
       FROM mapped_release_sets)
 WHERE rank_priority = 1;
 
+-- Precompute Wikidata mapping once to avoid per-row nested evaluations
+CREATE TEMP TABLE artist_wikidata_map AS
+SELECT lau.entity0 AS artist_id, REGEXP_EXTRACT(u.url, '(Q[0-9]+)', 1) AS wikidata_id
+FROM raw_l_artist_url lau
+         JOIN raw_url u ON lau.entity1 = u.id
+WHERE u.url LIKE '%wikidata.org%';
+
 INSERT INTO target_sqlite.release_group (release_group_mbid, release_group_title, release_group_type)
 SELECT DISTINCT release_group_mbid, release_group_title, release_group_type
 FROM temp_canonical_rank
@@ -90,43 +93,37 @@ SELECT DISTINCT
     tcr.length,
     a.gid   AS primary_artist_mbid,
     a.name  AS primary_artist_name,
-    (SELECT REGEXP_EXTRACT(u.url, '(Q[0-9]+)', 1)
-     FROM raw_l_artist_url lau
-              JOIN raw_url u ON lau.entity1 = u.id
-     WHERE lau.entity0 = a.id
-       AND u.url LIKE '%wikidata.org%'
-     LIMIT 1) AS primary_artist_wikidata_id
+    awm.wikidata_id AS primary_artist_wikidata_id
 FROM temp_canonical_rank tcr
          LEFT JOIN raw_recording rec ON tcr.recording_mbid = rec.gid
          LEFT JOIN raw_artist_credit_name acn ON rec.artist_credit = acn.artist_credit AND TRY_CAST(acn.position AS INTEGER) = 0
          LEFT JOIN raw_artist a ON acn.artist = a.id
-WHERE tcr.recording_mbid IS NOT NULL;
+         LEFT JOIN artist_wikidata_map awm ON a.id = awm.artist_id
+WHERE tcr.recording_mbid IS NOT NULL
+  AND tcr.release_group_mbid IS NOT NULL; -- Null safety for target schema constraints
 
 INSERT INTO target_sqlite.recording_artists (recording_mbid, artist_mbid, position, artist_name, artist_wikidata_id)
 SELECT rec.gid                           AS recording_mbid,
        a.gid                             AS artist_mbid,
        TRY_CAST(acn.position AS INTEGER) AS position,
        a.name                            AS artist_name,
-       (SELECT REGEXP_EXTRACT(u.url, '(Q[0-9]+)', 1)
-        FROM raw_l_artist_url lau
-                 JOIN raw_url u ON lau.entity1 = u.id
-        WHERE lau.entity0 = a.id
-          AND u.url LIKE '%wikidata.org%'
-        LIMIT 1)                         AS artist_wikidata_id
+       awm.wikidata_id                   AS artist_wikidata_id
 FROM raw_recording rec
          JOIN raw_artist_credit_name acn ON rec.artist_credit = acn.artist_credit
          JOIN raw_artist a ON acn.artist = a.id
+         LEFT JOIN artist_wikidata_map awm ON a.id = awm.artist_id
 WHERE rec.gid IN (SELECT recording_mbid FROM temp_canonical_rank);
 
 INSERT INTO target_sqlite.link_lookup (url_identifier, provider, recording_mbid)
-SELECT DISTINCT REGEXP_EXTRACT(split_part(u.url, '?', 1), '([^/]+)$', 1) AS url_identifier,
-                CASE
-                    WHEN u.url LIKE '%spotify.com%' THEN 'spotify'
-                    WHEN u.url LIKE '%apple.com%' THEN 'applemusic'
-                    WHEN u.url LIKE '%tidal.com%' THEN 'tidal'
-                    ELSE 'unknown'
-                    END                               AS provider,
-                rec.gid                               AS recording_mbid
+SELECT DISTINCT
+    REGEXP_EXTRACT(REGEXP_REPLACE(u.url, '[\?#].*', ''), '([^/]+)$', 1) AS url_identifier,
+    CASE
+        WHEN u.url LIKE '%spotify.com%' THEN 'spotify'
+        WHEN u.url LIKE '%apple.com%' THEN 'applemusic'
+        WHEN u.url LIKE '%tidal.com%' THEN 'tidal'
+        ELSE 'unknown'
+        END AS provider,
+    rec.gid AS recording_mbid
 FROM raw_url u
          JOIN raw_l_recording_url lru ON u.id = lru.entity1
          JOIN raw_recording rec ON lru.entity0 = rec.id

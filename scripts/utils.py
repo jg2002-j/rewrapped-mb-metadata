@@ -63,27 +63,27 @@ def extract_and_stream_to_duckdb(con, archive_path, internal_name):
     internal_tar_path = f"mbdump/{internal_name}"
     print(f"Isolating {internal_tar_path} from {archive_path}...")
 
+    # Added check=True: Extraction failures act as a hard kill switch
     cmd = ["tar", "-xjf", archive_path, internal_tar_path]
-    subprocess.run(cmd, check=False)
+    subprocess.run(cmd, check=True)
 
     columns = TABLE_SCHEMAS[internal_name]
     con.execute(f"DROP TABLE IF EXISTS {target_table};")
 
-    if os.path.exists(internal_tar_path):
-        print(f"Streaming text schema directly into memory structures: {target_table}")
-        con.execute(f"""
-            CREATE TABLE {target_table} AS 
-            SELECT * FROM read_csv('{internal_tar_path}', sep='\t', header=False, nullstr='\\N', names={columns}, all_varchar=True)
-        """)
-        os.remove(internal_tar_path)
-        try:
-            os.rmdir("mbdump")
-        except OSError:
-            pass
-    else:
-        print(f"Skipping extraction target: {internal_name} (Generating type-safe mock schema)")
-        column_selects = ", ".join([f"CAST(NULL AS VARCHAR) AS {col}" for col in columns])
-        con.execute(f"CREATE TABLE {target_table} AS SELECT * FROM (SELECT {column_selects}) WHERE 1=0;")
+    if not os.path.exists(internal_tar_path):
+        print(f"Critical execution barrier: Failed to locate {internal_tar_path} after extraction.")
+        sys.exit(1)
+
+    print(f"Streaming text schema directly into memory structures: {target_table}")
+    con.execute(f"""
+        CREATE TABLE {target_table} AS 
+        SELECT * FROM read_csv('{internal_tar_path}', sep='\t', header=False, nullstr='\\N', names={columns}, all_varchar=True)
+    """)
+    os.remove(internal_tar_path)
+    try:
+        os.rmdir("mbdump")
+    except OSError:
+        pass
 
 
 def cleanup_temp_files():

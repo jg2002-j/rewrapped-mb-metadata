@@ -34,7 +34,7 @@ def initialize_bare_sqlite_schema(con):
                     url_identifier TEXT NOT NULL,
                     provider       TEXT,
                     recording_mbid TEXT NOT NULL,
-                    PRIMARY KEY (url_identifier, provider, recording_mbid)
+                    PRIMARY KEY (provider, url_identifier, recording_mbid)
                 );
 
                 CREATE TABLE target_sqlite.text_lookup
