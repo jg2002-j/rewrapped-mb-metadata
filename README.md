@@ -159,54 +159,47 @@ In order of priority:
 
 # What does the database contain?
 
-Something like this, open to change for more optimised/performant lookups
-
 ```sqlite
-create table release_group --simplified down into a single canonical release group, not an actual MusicBrainz release group
+CREATE TABLE target_sqlite.release_group
 (
-    release_group_mbid  text primary key, --need this for album art lookup, and also unique identifier for release group in downstream service
-    release_group_title text not null,    --need this for text for release group
-    release_group_type  text
+    release_group_mbid  TEXT PRIMARY KEY,
+    release_group_title TEXT NOT NULL,
+    release_group_type  TEXT
 );
 
-create table recording
+CREATE TABLE target_sqlite.recording
 (
-    length             integer, --average track length for this recording, need this in downstream service
-    recording_mbid     text primary key,
-    release_group_mbid text not null,
-    foreign key (release_group_mbid) references release_group (release_group_mbid)
+    recording_mbid      TEXT PRIMARY KEY,
+    release_group_mbid  TEXT NOT NULL,
+    length              INTEGER,
+    primary_artist_mbid TEXT,
+    primary_artist_name TEXT
 );
 
-create table recording_artists
+CREATE TABLE target_sqlite.recording_artists
 (
-    position           integer not null,                -- 1 = primary artist
-    recording_mbid     text    not null,
-    artist_mbid        text    not null,
-    artist_name        text    not null collate nocase, --need for full artist credits in downstream service
-    artist_wikidata_id text,                            --need this for artist art lookup
-    foreign key (recording_mbid) references recording (recording_mbid),
-    primary key (recording_mbid, artist_mbid)
+    recording_mbid     TEXT    NOT NULL,
+    artist_mbid        TEXT    NOT NULL,
+    position           INTEGER NOT NULL,
+    artist_name        TEXT    NOT NULL,
+    artist_wikidata_id TEXT
 );
 
-create table link_lookup
+CREATE TABLE target_sqlite.link_lookup
 (
-    url_identifier text not null, --strip urls of domains here so lookups become efficient via index, e.g. https://open.spotify.com/track/273QnyCvJB65rScHJ1nPZb to just 273QnyCvJB65rScHJ1nPZb
-    provider       text,          --spotify, applemusic, tidal, etc.
-    recording_mbid text not null,
-    foreign key (recording_mbid) references recording (recording_mbid),
-    primary key (url_identifier, provider)
+    url_identifier TEXT NOT NULL,
+    provider       TEXT,
+    recording_mbid TEXT NOT NULL,
+    PRIMARY KEY (url_identifier, provider)
 );
 
-create table text_lookup --the fallback text lookup, equivalent to every track appearance on every release
+CREATE TABLE target_sqlite.text_lookup
 (
-    id             integer primary key,
-    --keep these separate so i can search by all/some of them, normalise before insert
-    track_title    text not null,
-    release_title  text not null,
-    artist_name    text not null, --primary artist only, joins for more artist information
-    --
-    recording_mbid text not null,
-    foreign key (recording_mbid) references recording (recording_mbid)
+    id             INTEGER PRIMARY KEY,
+    track_title    TEXT NOT NULL,
+    release_title  TEXT NOT NULL,
+    artist_name    TEXT NOT NULL,
+    recording_mbid TEXT NOT NULL
 );
 ```
 
@@ -222,8 +215,9 @@ create table text_lookup --the fallback text lookup, equivalent to every track a
 * Primary key indexes are created out of the box, so aren't needed to be manually created after
 
 ```sql
-create index idx_text_lookup on text_lookup (track_title, artist_name); --not indexing all 4 columns to save space
-create index idx_recording_artists on recording_artists (recording_mbid, position, artist_name, artist_wikidata_id);
+CREATE INDEX IF NOT EXISTS idx_text_lookup ON text_lookup (track_title, artist_name);
+CREATE INDEX IF NOT EXISTS idx_recording_artists_lookup ON recording_artists (recording_mbid, artist_mbid);
+CREATE INDEX IF NOT EXISTS idx_recording_artists_details ON recording_artists (position, artist_name, artist_wikidata_id);
 ```
 
 # What does the downstream service need?
