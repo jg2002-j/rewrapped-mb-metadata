@@ -74,7 +74,7 @@ def extract_and_stream_to_duckdb(con, archive_path, internal_name):
         print(f"Streaming text schema directly into memory structures: {target_table}")
         con.execute(f"""
             CREATE TABLE {target_table} AS 
-            SELECT * FROM read_csv('{internal_tar_path}', sep='\t', header=False, nullstr='\\\\N', names={columns}, all_varchar=True)
+            SELECT * FROM read_csv('{internal_tar_path}', sep='\t', header=False, nullstr='\\N', names={columns}, all_varchar=True)
         """)
         os.remove(internal_tar_path)
         try:

@@ -14,18 +14,11 @@ WITH release_dates_combined AS (SELECT release, date_year, date_month, date_day
                                        COALESCE(
                                                TRY_CAST(
                                                        MAKE_DATE(
-                                                               CAST(CASE
-                                                                        WHEN date_year IS NULL OR date_year = '0'
-                                                                            THEN '9999'
-                                                                        ELSE date_year END AS INTEGER),
-                                                               CAST(CASE
-                                                                        WHEN date_month IS NULL OR date_month = '0'
-                                                                            THEN '1'
-                                                                        ELSE date_month END AS INTEGER),
-                                                               CAST(CASE WHEN date_day IS NULL OR date_day = '0' THEN '1' ELSE date_day END AS INTEGER)
+                                                               COALESCE(NULLIF(TRY_CAST(date_year AS INTEGER), 0), 9999),
+                                                               COALESCE(NULLIF(TRY_CAST(date_month AS INTEGER), 0), 1),
+                                                               COALESCE(NULLIF(TRY_CAST(date_day AS INTEGER), 0), 1)
                                                        ) AS DATE
-                                               ),
-                                               '9999-12-31'::DATE
+                                               ), '9999-12-31':: DATE
                                        )
                                ) AS normalized_release_date
                         FROM release_dates_combined

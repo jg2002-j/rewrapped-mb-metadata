@@ -15,6 +15,7 @@ dryrun/
 *.duckdb
 duckdb_spill_buffer/
 engine_runtime.duckdb*
+/mbdump
 
 # Other
 /do_not_track/
