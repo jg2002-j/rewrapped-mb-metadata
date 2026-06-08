@@ -83,23 +83,32 @@ SELECT DISTINCT release_group_mbid, release_group_title, release_group_type
 FROM temp_canonical_rank
 WHERE release_group_mbid IS NOT NULL;
 
-INSERT INTO target_sqlite.recording (recording_mbid, release_group_mbid, length)
-SELECT DISTINCT recording_mbid, release_group_mbid, length
-FROM temp_canonical_rank
-WHERE recording_mbid IS NOT NULL;
+-- Populate Recording Table alongside Primary Artist info (position = 0)
+INSERT INTO target_sqlite.recording (recording_mbid, release_group_mbid, length, primary_artist_mbid, primary_artist_name)
+SELECT DISTINCT
+    tcr.recording_mbid,
+    tcr.release_group_mbid,
+    tcr.length,
+    a.gid   AS primary_artist_mbid,
+    a.name  AS primary_artist_name
+FROM temp_canonical_rank tcr
+         LEFT JOIN raw_recording rec ON tcr.recording_mbid = rec.gid
+         LEFT JOIN raw_artist_credit_name acn ON rec.artist_credit = acn.artist_credit AND TRY_CAST(acn.position AS INTEGER) = 0
+         LEFT JOIN raw_artist a ON acn.artist = a.id
+WHERE tcr.recording_mbid IS NOT NULL;
 
--- Populate Artist Matrix Assignments
+-- Populate Artist Matrix Assignments (Captures every credit row perfectly, including duplicate edge cases)
 INSERT INTO target_sqlite.recording_artists (recording_mbid, artist_mbid, position, artist_name, artist_wikidata_id)
-SELECT DISTINCT rec.gid                           AS recording_mbid,
-                a.gid                             AS artist_mbid,
-                TRY_CAST(acn.position AS INTEGER) AS position,
-                a.name                            AS artist_name,
-                (SELECT REGEXP_EXTRACT(u.url, '(Q[0-9]+)$', 1)
-                 FROM raw_l_artist_url lau
-                          JOIN raw_url u ON lau.entity1 = u.id
-                 WHERE lau.entity0 = a.id
-                   AND lau.link = '352'
-                 LIMIT 1)                         AS artist_wikidata_id
+SELECT rec.gid                           AS recording_mbid,
+       a.gid                             AS artist_mbid,
+       TRY_CAST(acn.position AS INTEGER) AS position,
+       a.name                            AS artist_name,
+       (SELECT REGEXP_EXTRACT(u.url, '(Q[0-9]+)$', 1)
+        FROM raw_l_artist_url lau
+                 JOIN raw_url u ON lau.entity1 = u.id
+        WHERE lau.entity0 = a.id
+          AND lau.link = '352'
+        LIMIT 1)                         AS artist_wikidata_id
 FROM raw_recording rec
          JOIN raw_artist_credit_name acn ON rec.artist_credit = acn.artist_credit
          JOIN raw_artist a ON acn.artist = a.id
