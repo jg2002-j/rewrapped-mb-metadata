@@ -1,116 +1,81 @@
-import duckdb
 import os
 import sys
-import logging
 import time
+import logging
+import duckdb
+from utils import stream_and_load_musicbrainz, cleanup_temp_files
+from schema import initialize_native_sqlite_schema, apply_optimized_indexes
 
-from schema import initialize_bare_sqlite_schema, apply_optimized_indexes
-from utils import get_tar_paths, extract_and_stream_to_duckdb, cleanup_temp_files, TABLE_MAPPING
-
-# Configure global logging matrix with high-resolution timestamps
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S',
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ]
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger("pipeline_engine")
 
 def main():
     start_time = time.time()
-    logger.info("==================================================")
+    logger.info("=" * 60)
     logger.info("INITIATING MUSICBRAINZ ANALYTICS PIPELINE ENGINE")
-    logger.info("==================================================")
-
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    sql_path = os.path.join(script_dir, "transformations.sql")
-    target_sqlite_name = "metadata.db"
-
-    # Reset working space environment
-    if os.path.exists(target_sqlite_name):
-        logger.info(f"Stale database artifact found. Removing: {target_sqlite_name}")
-        os.remove(target_sqlite_name)
+    logger.info("=" * 60)
 
     cleanup_temp_files()
+    target_sqlite_path = "mb_metadata.db"
 
+    # Initialize the high-performance in-memory DuckDB instance
     logger.info("Initializing DuckDB storage engine runtime connection...")
-    con = duckdb.connect('engine_runtime.duckdb')
+    con = duckdb.connect("engine_runtime.duckdb")
 
     try:
         logger.info("Configuring engine hardware allocation boundaries...")
-        con.execute("PRAGMA memory_limit='4GB'")
-        con.execute("PRAGMA temp_directory='duckdb_spill_buffer'")
+        con.execute("SET memory_limit='5.5GB';")
+        con.execute("SET max_temp_directory_size='10GB';")
+        con.execute("SET temp_directory='duckdb_spill_buffer';")
 
-        # This forces DuckDB to output progress indications to stdout during long operations
-        con.execute("PRAGMA enable_progress_bar=true;")
-
-        # Unpack raw entities through imported utilities
-        archives = get_tar_paths()
-        for archive in archives:
-            if not os.path.exists(archive):
-                logger.critical(f"CRITICAL EXECUTION BARRIER: File target missing -> {archive}")
-                sys.exit(1)
-
-            logger.info(f"Targeting source archive package: {archive}")
-            for idx, table in enumerate(TABLE_MAPPING.keys(), 1):
-                logger.info(f"[{idx}/{len(TABLE_MAPPING)}] Processing extraction pipeline for entity type: '{table}'")
-                extract_and_stream_to_duckdb(con, archive, table)
-
-        # Attach SQLite Database plugin layer
-        logger.info("Loading SQLite translation layer extensions...")
         con.execute("INSTALL sqlite;")
         con.execute("LOAD sqlite;")
 
-        logger.info(f"Attaching destination transaction engine space: {target_sqlite_name}")
-        con.execute(f"ATTACH '{target_sqlite_name}' AS target_sqlite (TYPE SQLITE);")
+        # Step 1: Initialize real SQLite database via native sqlite3 library calls
+        if os.path.exists(target_sqlite_path):
+            os.remove(target_sqlite_path)
+        initialize_native_sqlite_schema(target_sqlite_path)
 
-        logger.info("Constructing remote destination tables and bare schemas...")
-        initialize_bare_sqlite_schema(con)
-        logger.info("Destination SQLite layouts compiled successfully.")
+        # Attach the genuine SQLite database to our main streaming engine context
+        con.execute(f"ATTACH '{target_sqlite_path}' AS target_sqlite (TYPE SQLITE);")
 
-        logger.info("Initiating analytical transformations and relational compilation...")
-        if os.path.exists(sql_path):
-            with open(sql_path, 'r') as query_file:
-                transformation_queries = query_file.read()
+        # Step 2: Stream, extract, and load raw musicbrainz data tables
+        stream_and_load_musicbrainz(con)
 
-            transform_start = time.time()
-            logger.info("Executing transformations.sql inside DuckDB core. (Progress indicators will emit directly from engine threads below)")
+        # Step 3: Run transformation workflows
+        transform_script_path = "transformations.sql"
+        if not os.path.exists(transform_script_path):
+            raise FileNotFoundError(f"Missing required execution asset: {transform_script_path}")
 
-            con.execute(transformation_queries)
+        logger.info(f"Reading target analytical workflow queries from {transform_script_path}...")
+        with open(transform_script_path, "r", encoding="utf-8") as f:
+            sql_script = f.read()
 
-            duration = time.time() - transform_start
-            logger.info(f"Analytical transformations completed successfully in {duration:.2f} seconds.")
-        else:
-            logger.warning(f"Execution warning: {sql_path} not found. Skipping data load steps.")
+        logger.info("Executing pure hash pipelines and phased table drop reductions...")
+        tx_start = time.time()
+        con.execute(sql_script)
+        logger.info(f"Target insertions and normalization mappings finalized in {time.time() - tx_start:.2f}s")
 
-        # Sever the live pipeline to allow index attachment locks safely
-        logger.info("Severing pipeline database attachments to prepare for standalone indexing...")
+        # Step 4: Detach to free up file handles and build indices natively
         con.execute("DETACH target_sqlite;")
-        con.close()
+        apply_optimized_indexes(target_sqlite_path)
 
-        # Call isolated indexing logic
-        logger.info("Generating optimized fast search secondary B-Trees on destination...")
-        index_start = time.time()
-        apply_optimized_indexes(target_sqlite_name)
-        logger.info(f"Indexing routines finalized successfully in {time.time() - index_start:.2f} seconds.")
-
-        total_duration = time.time() - start_time
-        logger.info("==================================================")
-        logger.info(f"PIPELINE TERMINATED SUCCESSFULLY In {total_duration:.2f} seconds.")
-        logger.info("==================================================")
+        logger.info("=" * 60)
+        logger.info(f"SUCCESS: Pipeline processing finalized in {time.time() - start_time:.2f}s")
+        logger.info("=" * 60)
 
     except Exception as e:
-        logger.critical(f"PIPELINE CRASHED DIAGNOSTIC DUMP: {str(e)}", exc_info=True)
-        sys.exit(1)
+        logger.critical("=" * 60)
+        logger.critical(f"PIPELINE CRASHED DIAGNOSTIC DUMP: {str(e)}")
+        logger.critical("=" * 60)
+        raise e
     finally:
-        try:
-            con.close()
-        except Exception:
-            pass
+        con.close()
         cleanup_temp_files()
-
 
 if __name__ == "__main__":
     main()

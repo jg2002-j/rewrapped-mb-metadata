@@ -31,17 +31,17 @@ jobs:
           sudo apt-get update && sudo apt-get install -y zstd curl tar
           pip install duckdb
 
-      - name: Download MusicBrainz Cloud Dumps
-        run: |
-          echo "Resolving the latest weekly export directory name..."
-          LATEST_FOLDER=$(curl -sL "https://data.musicbrainz.org/pub/musicbrainz/data/fullexport/LATEST")
-          echo "Targeting active timestamp folder: $LATEST_FOLDER"
-          
-          echo "Streaming data packages into workspace..."
-          curl -SLf "https://ftp.musicbrainz.org/pub/musicbrainz/data/fullexport/${LATEST_FOLDER}/mbdump.tar.bz2" \
-            -o mbdump.tar.bz2
-          
-          echo "Downloads completed successfully."
+#      - name: Download MusicBrainz Cloud Dumps
+#        run: |
+#          echo "Resolving the latest weekly export directory name..."
+#          LATEST_FOLDER=$(curl -sL "https://data.musicbrainz.org/pub/musicbrainz/data/fullexport/LATEST")
+#          echo "Targeting active timestamp folder: $LATEST_FOLDER"
+#
+#          echo "Streaming data packages into workspace..."
+#          curl -SLf "https://ftp.musicbrainz.org/pub/musicbrainz/data/fullexport/${LATEST_FOLDER}/mbdump.tar.bz2" \
+#            -o mbdump.tar.bz2
+#
+#          echo "Downloads completed successfully."
 
       - name: Generate Runtime Timestamp
         id: timestamp
