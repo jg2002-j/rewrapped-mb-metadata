@@ -2,7 +2,6 @@
 -- ALIGNMENT WITH BLUEPRINT STRUCTURAL MATRIX DEFINITIONS
 -- ============================================================================
 
--- 1. Compute Canonical Ranking Hierarchy Matrix
 CREATE TABLE temp_canonical_rank AS
 WITH release_dates_combined AS (SELECT release, date_year, date_month, date_day
                                 FROM raw_release_country
@@ -29,7 +28,9 @@ WITH release_dates_combined AS (SELECT release, date_year, date_month, date_day
                                     rg.name                                                   AS release_group_title,
                                     rg_type.name                                              AS release_group_type,
 
-                                    -- Scoring Evaluation Weights
+                                    REGEXP_REPLACE(REGEXP_REPLACE(LOWER(rec.name), '[^\p{L}\p{N}\s]', '', 'g'), '\s+', ' ', 'g') AS normalized_rec_name,
+                                    rec.artist_credit                                         AS artist_credit,
+
                                     CASE CAST(rg_type.name AS TEXT)
                                         WHEN 'Album' THEN 1000
                                         WHEN 'EP' THEN 900
@@ -71,71 +72,73 @@ SELECT recording_mbid,
        release_group_type
 FROM (SELECT *,
              ROW_NUMBER() OVER (
-                 PARTITION BY recording_mbid
+                 PARTITION BY normalized_rec_name, artist_credit, ROUND(COALESCE(length, 0) / 5000.0)
                  ORDER BY evaluation_score DESC, normalized_release_date ASC, release_group_mbid ASC
                  ) as rank_priority
       FROM mapped_release_sets)
 WHERE rank_priority = 1;
 
--- 2. Populate Bare Target Tables Natively
 INSERT INTO target_sqlite.release_group (release_group_mbid, release_group_title, release_group_type)
 SELECT DISTINCT release_group_mbid, release_group_title, release_group_type
 FROM temp_canonical_rank
 WHERE release_group_mbid IS NOT NULL;
 
--- Populate Recording Table alongside Primary Artist info (position = 0)
-INSERT INTO target_sqlite.recording (recording_mbid, release_group_mbid, length, primary_artist_mbid, primary_artist_name)
+INSERT INTO target_sqlite.recording (recording_mbid, release_group_mbid, length, primary_artist_mbid, primary_artist_name, primary_artist_wikidata_id)
 SELECT DISTINCT
     tcr.recording_mbid,
     tcr.release_group_mbid,
     tcr.length,
     a.gid   AS primary_artist_mbid,
-    a.name  AS primary_artist_name
+    a.name  AS primary_artist_name,
+    (SELECT REGEXP_EXTRACT(u.url, '(Q[0-9]+)', 1)
+     FROM raw_l_artist_url lau
+              JOIN raw_url u ON lau.entity1 = u.id
+     WHERE lau.entity0 = a.id
+       AND u.url LIKE '%wikidata.org%'
+     LIMIT 1) AS primary_artist_wikidata_id
 FROM temp_canonical_rank tcr
          LEFT JOIN raw_recording rec ON tcr.recording_mbid = rec.gid
          LEFT JOIN raw_artist_credit_name acn ON rec.artist_credit = acn.artist_credit AND TRY_CAST(acn.position AS INTEGER) = 0
          LEFT JOIN raw_artist a ON acn.artist = a.id
 WHERE tcr.recording_mbid IS NOT NULL;
 
--- Populate Artist Matrix Assignments (Captures every credit row perfectly, including duplicate edge cases)
 INSERT INTO target_sqlite.recording_artists (recording_mbid, artist_mbid, position, artist_name, artist_wikidata_id)
 SELECT rec.gid                           AS recording_mbid,
        a.gid                             AS artist_mbid,
        TRY_CAST(acn.position AS INTEGER) AS position,
        a.name                            AS artist_name,
-       (SELECT REGEXP_EXTRACT(u.url, '(Q[0-9]+)$', 1)
+       (SELECT REGEXP_EXTRACT(u.url, '(Q[0-9]+)', 1)
         FROM raw_l_artist_url lau
                  JOIN raw_url u ON lau.entity1 = u.id
         WHERE lau.entity0 = a.id
-          AND lau.link = '352'
+          AND u.url LIKE '%wikidata.org%'
         LIMIT 1)                         AS artist_wikidata_id
 FROM raw_recording rec
          JOIN raw_artist_credit_name acn ON rec.artist_credit = acn.artist_credit
          JOIN raw_artist a ON acn.artist = a.id
 WHERE rec.gid IN (SELECT recording_mbid FROM temp_canonical_rank);
 
--- Populate Direct URL Fast Link Identifiers
 INSERT INTO target_sqlite.link_lookup (url_identifier, provider, recording_mbid)
-SELECT DISTINCT REGEXP_EXTRACT(u.url, '([^/:]+)$', 1) AS url_identifier,
+SELECT DISTINCT REGEXP_EXTRACT(split_part(u.url, '?', 1), '([^/]+)$', 1) AS url_identifier,
                 CASE
-                    WHEN u.url ILIKE '%spotify%' THEN 'spotify'
-                    WHEN u.url ILIKE '%apple%' THEN 'applemusic'
-                    WHEN u.url ILIKE '%tidal%' THEN 'tidal'
+                    WHEN u.url LIKE '%spotify.com%' THEN 'spotify'
+                    WHEN u.url LIKE '%apple.com%' THEN 'applemusic'
+                    WHEN u.url LIKE '%tidal.com%' THEN 'tidal'
                     ELSE 'unknown'
                     END                               AS provider,
                 rec.gid                               AS recording_mbid
 FROM raw_url u
          JOIN raw_l_recording_url lru ON u.id = lru.entity1
          JOIN raw_recording rec ON lru.entity0 = rec.id
-WHERE lru.link IN ('74', '75', '85')
+WHERE (u.url LIKE '%spotify.com%' OR u.url LIKE '%apple.com%' OR u.url LIKE '%tidal.com%')
   AND rec.gid IN (SELECT recording_mbid FROM temp_canonical_rank);
 
--- Populate Normalized Full Text Search Mappings
 INSERT INTO target_sqlite.text_lookup (track_title, release_title, artist_name, recording_mbid)
-SELECT DISTINCT LOWER(t.name) AS track_title,
-                LOWER(r.name) AS release_title,
-                LOWER(a.name) AS artist_name,
-                rec.gid       AS recording_mbid
+SELECT DISTINCT
+    REGEXP_REPLACE(REGEXP_REPLACE(LOWER(t.name), '[^\p{L}\p{N}\s]', '', 'g'), '\s+', ' ', 'g') AS track_title,
+    REGEXP_REPLACE(REGEXP_REPLACE(LOWER(r.name), '[^\p{L}\p{N}\s]', '', 'g'), '\s+', ' ', 'g') AS release_title,
+    REGEXP_REPLACE(REGEXP_REPLACE(LOWER(a.name), '[^\p{L}\p{N}\s]', '', 'g'), '\s+', ' ', 'g') AS artist_name,
+    rec.gid AS recording_mbid
 FROM raw_track t
          JOIN raw_recording rec ON t.recording = rec.id
          JOIN raw_medium m ON t.medium = m.id

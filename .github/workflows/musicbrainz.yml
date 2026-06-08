@@ -48,7 +48,7 @@ jobs:
         run: echo "RUN_TS=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
 
       - name: Execute Pipeline Engine
-        run: python scripts/process_musicbrainz.py --prod
+        run: python scripts/main.py --prod
 
       - name: Compress Output Database
         run: |
