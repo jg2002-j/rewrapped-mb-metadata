@@ -1,0 +1,62 @@
+name: Build MusicBrainz Analytics Database
+
+on:
+  schedule:
+    - cron: '33 3 * * 3' # Every Wednesday at 03:33 AM UTC
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Maximize Build Space
+        uses: easimon/maximize-build-space@master
+        with:
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install System and Python Dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y zstd curl tar
+          pip install duckdb
+
+      - name: Download MusicBrainz Cloud Dumps
+        run: |
+          echo "Resolving the latest weekly export directory name..."
+          LATEST_FOLDER=$(curl -sL "https://data.musicbrainz.org/pub/musicbrainz/data/fullexport/LATEST")
+          echo "Targeting active timestamp folder: $LATEST_FOLDER"
+          
+          echo "Streaming data packages into workspace..."
+          curl -SLf "https://ftp.musicbrainz.org/pub/musicbrainz/data/fullexport/${LATEST_FOLDER}/mbdump.tar.bz2" \
+            -o mbdump.tar.bz2
+          
+          echo "Downloads completed successfully."
+
+      - name: Generate Runtime Timestamp
+        id: timestamp
+        run: echo "RUN_TS=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
+
+      - name: Execute Pipeline Engine
+        run: python scripts/process_musicbrainz.py --prod
+
+      - name: Compress Output Database
+        run: |
+          zstd -19 metadata.db -o "metadata-${{ steps.timestamp.outputs.RUN_TS }}.db.zst"
+
+      - name: Upload Finished Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: metadata-${{ steps.timestamp.outputs.RUN_TS }}
+          path: metadata-${{ steps.timestamp.outputs.RUN_TS }}.db.zst
+          retention-days: 14
