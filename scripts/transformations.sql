@@ -87,20 +87,21 @@ FROM temp_canonical_rank
 WHERE release_group_mbid IS NOT NULL;
 
 INSERT INTO target_sqlite.recording (recording_mbid, release_group_mbid, length, primary_artist_mbid, primary_artist_name, primary_artist_wikidata_id)
-SELECT DISTINCT
+SELECT
     tcr.recording_mbid,
-    tcr.release_group_mbid,
-    tcr.length,
-    a.gid   AS primary_artist_mbid,
-    a.name  AS primary_artist_name,
-    awm.wikidata_id AS primary_artist_wikidata_id
+    ANY_VALUE(tcr.release_group_mbid) AS release_group_mbid,
+    ANY_VALUE(tcr.length) AS length,
+    ANY_VALUE(a.gid) AS primary_artist_mbid,
+    ANY_VALUE(a.name) AS primary_artist_name,
+    ANY_VALUE(awm.wikidata_id) AS primary_artist_wikidata_id
 FROM temp_canonical_rank tcr
          LEFT JOIN raw_recording rec ON tcr.recording_mbid = rec.gid
          LEFT JOIN raw_artist_credit_name acn ON rec.artist_credit = acn.artist_credit AND TRY_CAST(acn.position AS INTEGER) = 0
          LEFT JOIN raw_artist a ON acn.artist = a.id
          LEFT JOIN artist_wikidata_map awm ON a.id = awm.artist_id
 WHERE tcr.recording_mbid IS NOT NULL
-  AND tcr.release_group_mbid IS NOT NULL; -- Null safety for target schema constraints
+  AND tcr.release_group_mbid IS NOT NULL
+GROUP BY tcr.recording_mbid;
 
 INSERT INTO target_sqlite.recording_artists (recording_mbid, artist_mbid, position, artist_name, artist_wikidata_id)
 SELECT rec.gid                           AS recording_mbid,
