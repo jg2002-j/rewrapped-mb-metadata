@@ -1,13 +1,14 @@
+import duckdb
+import logging
 import os
 import sys
 import time
-import logging
 from collections import OrderedDict
 from contextlib import contextmanager
 
-import duckdb
-from utils import stream_and_load_musicbrainz, cleanup_temp_files
+import guardrails
 from schema import initialize_native_sqlite_schema, apply_optimized_indexes
+from utils import stream_and_load_musicbrainz, cleanup_temp_files
 
 logging.basicConfig(
     level=logging.INFO,
@@ -64,6 +65,14 @@ def main():
     cleanup_temp_files()
     target_sqlite_path = TARGET_SQLITE_NAME
 
+    # Resource guardrails (RAM / disk / runtime) enforcing the free-tier envelope,
+    # locally and on CI alike. Pre-flight disk check fails fast before the long
+    # ingest if the volume is too small.
+    guard_cfg = guardrails.GuardrailConfig()
+    guardrails.preflight_disk_check(guard_cfg)
+    monitor = guardrails.GuardrailMonitor().start()
+    pipeline_ok = False
+
     # On-disk DuckDB engine file (it spills to disk under the configured limits).
     logger.info("Initializing DuckDB storage engine runtime connection...")
     con = duckdb.connect("engine_runtime.duckdb")
@@ -71,12 +80,22 @@ def main():
     try:
         with phase("engine_configuration"):
             logger.info("Configuring engine hardware allocation boundaries...")
-            con.execute("SET memory_limit='5.5GB';")
-            con.execute("SET max_temp_directory_size='10GB';")
+            # All tunable via env so the budget can be adjusted without code edits.
+            mem_limit = os.environ.get("PIPELINE_MEMORY_LIMIT", "5.5GB")
+            temp_limit = os.environ.get("PIPELINE_TEMP_LIMIT", "30GB")
+            # DuckDB's per-operator memory scales with thread count, so cap it (the
+            # #1 OOM remedy). Default to a modest cap regardless of core count;
+            # override with PIPELINE_THREADS if a run has spare headroom.
+            default_threads = max(1, min(4, os.cpu_count() or 2))
+            threads = int(os.environ.get("PIPELINE_THREADS", str(default_threads)))
+
+            con.execute(f"SET memory_limit='{mem_limit}';")
+            con.execute(f"SET max_temp_directory_size='{temp_limit}';")
             con.execute("SET temp_directory='duckdb_spill_buffer';")
             # Lower peak memory on large aggregations/sorts; we never rely on row order.
             con.execute("SET preserve_insertion_order=false;")
-            con.execute(f"SET threads={max(1, os.cpu_count() or 2)};")
+            con.execute(f"SET threads={threads};")
+            logger.info(f"Engine limits -> memory={mem_limit}, temp_dir_max={temp_limit}, threads={threads}")
 
             con.execute("INSTALL sqlite;")
             con.execute("LOAD sqlite;")
@@ -115,6 +134,7 @@ def main():
         with phase("index_and_compact"):
             apply_optimized_indexes(target_sqlite_path)
 
+        pipeline_ok = True
         logger.info("=" * 60)
         logger.info(f"SUCCESS: Pipeline processing finalized in {time.time() - start_time:.2f}s")
         logger.info("=" * 60)
@@ -130,7 +150,12 @@ def main():
         except Exception:
             pass
         cleanup_temp_files()
-        _log_phase_summary(time.time() - start_time)
+        total_elapsed = time.time() - start_time
+        _log_phase_summary(total_elapsed)
+        monitor.stop()
+        # Always report; only raise (fail the process) when the pipeline otherwise
+        # succeeded, so a real pipeline error isn't masked by a guardrail breach.
+        guardrails.report_and_enforce(guard_cfg, monitor, total_elapsed, enforce=pipeline_ok)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,6 @@
+# Pin DuckDB to a major version so a breaking release can't silently change behaviour.
+duckdb>=1.0,<2.0
+# Cross-platform RAM/disk measurement for the in-process guardrails (guardrails.py).
+# Required on Windows for RAM enforcement; on Linux/macOS the stdlib `resource`
+# module is used as a fallback if psutil is absent.
+psutil>=5.9

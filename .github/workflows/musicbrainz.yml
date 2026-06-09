@@ -9,13 +9,25 @@ jobs:
   build:
     runs-on: ubuntu-latest
     # Hard stop below GitHub's 6h (360 min) job cap so a runaway run fails with a
-    # clear signal instead of being killed at the ceiling.
+    # clear signal instead of being silently killed at the ceiling.
     timeout-minutes: 330
     env:
-      # --- guardrail thresholds (tune to the runner you target) ---
-      MAX_RSS_MB: 6500          # fail if peak physical RAM exceeds this (~7GB box headroom)
-      MIN_DISK_AVAIL_GB: 3      # fail if free disk on the work volume ever drops below this
-      MAX_RUNTIME_MIN: 300      # soft wall-clock ceiling (hard GitHub cap is 360)
+      # --- target runner envelope (GitHub free-tier standard runners) ---------
+      # Public repos:  4 vCPU / 16 GB RAM / 14 GB SSD  (free, unlimited)
+      # Private repos: 2 vCPU /  7 GB RAM / 14 GB SSD  (free-tier minutes)
+      # The pipeline caps DuckDB at 5.5 GB, i.e. it targets the 7 GB box, so the
+      # RAM guardrail enforces the 7 GB envelope even on a larger public runner:
+      # a green run is then guaranteed to also fit the smallest free-tier runner.
+      RUNNER_RAM_MB: 7168       # target RAM envelope to enforce (set 16384 for public-only)
+      RAM_HEADROOM_MB: 1024     # leave this much for the OS + Python outside DuckDB
+      DISK_HEADROOM_GB: 2       # fail if free disk on the work volume ever drops below this
+      MIN_START_DISK_GB: 40     # fail fast if the work volume can't hold the dataset peak
+      MAX_RUNTIME_MIN: 300      # soft wall-clock ceiling (hard cap is timeout-minutes above)
+      # The pipeline (main.py) reads the same thresholds above. On CI we let it
+      # MEASURE/report only and leave enforcement to the steps below (they use the
+      # authoritative /usr/bin/time peak and preserve the artifact on a soft breach).
+      # Locally the Python guardrails enforce by default so you can validate the fit.
+      PIPELINE_GUARDRAILS: "off"
     steps:
       - name: Maximize Build Space
         uses: easimon/maximize-build-space@v10
@@ -36,13 +48,53 @@ jobs:
 
       - name: Install System and Python Dependencies
         run: |
+          # `time` provides /usr/bin/time -v (peak RSS); zstd/curl/tar for the pipeline.
           sudo apt-get update && sudo apt-get install -y zstd curl tar time
           # Pin DuckDB so a future breaking release can't silently change behaviour.
-          pip install "duckdb>=1.0,<2.0"
+          # psutil powers the in-process guardrail measurements in guardrails.py.
+          pip install "duckdb>=1.0,<2.0" psutil
 
-      # NOTE: the production dump is downloaded by the pipeline itself
-      # (utils.stream_and_load_musicbrainz streams it directly under --prod),
-      # so there is no separate download step here.
+      - name: Probe runner resources
+        run: |
+          set -uo pipefail
+          ACTUAL_RAM_MB=$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo)
+          NPROC=$(nproc)
+          # Work volume = the filesystem holding the checkout (the maximized build volume).
+          read -r DISK_TOTAL_KB DISK_AVAIL_KB < <(df -Pk . | tail -1 | awk '{print $2, $4}')
+          DISK_AVAIL_GB=$(awk "BEGIN{printf \"%.1f\", $DISK_AVAIL_KB/1048576}")
+          DISK_TOTAL_GB=$(awk "BEGIN{printf \"%.1f\", $DISK_TOTAL_KB/1048576}")
+
+          # Effective RAM ceiling = stricter of (target envelope, actual machine) - headroom.
+          EFFECTIVE_RAM_MB=$RUNNER_RAM_MB
+          if [ "$ACTUAL_RAM_MB" -lt "$EFFECTIVE_RAM_MB" ]; then EFFECTIVE_RAM_MB=$ACTUAL_RAM_MB; fi
+          MAX_RSS_MB=$(( EFFECTIVE_RAM_MB - RAM_HEADROOM_MB ))
+
+          # Publish for later steps.
+          {
+            echo "ACTUAL_RAM_MB=$ACTUAL_RAM_MB"
+            echo "NPROC=$NPROC"
+            echo "MAX_RSS_MB=$MAX_RSS_MB"
+            echo "DISK_TOTAL_GB=$DISK_TOTAL_GB"
+            echo "DISK_AVAIL_GB_START=$DISK_AVAIL_GB"
+          } >> "$GITHUB_ENV"
+
+          {
+            echo "## Runner resources (detected)"
+            echo ""
+            echo "| Resource | Detected | Enforced ceiling |"
+            echo "|---|---|---|"
+            echo "| RAM | ${ACTUAL_RAM_MB} MB | peak RSS < ${MAX_RSS_MB} MB |"
+            echo "| vCPU | ${NPROC} | - |"
+            echo "| Work volume total | ${DISK_TOTAL_GB} GB | - |"
+            echo "| Work volume free (start) | ${DISK_AVAIL_GB} GB | stay > ${DISK_HEADROOM_GB} GB |"
+          } | tee -a "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
+
+          # Fail fast: not enough disk to hold the dataset peak (~30-40 GB with the
+          # on-disk intermediates). Usually means Maximize Build Space under-delivered.
+          if awk "BEGIN{exit !($DISK_AVAIL_KB/1048576 < $MIN_START_DISK_GB)}"; then
+            echo "::error::Only ${DISK_AVAIL_GB} GB free on the work volume; need >= ${MIN_START_DISK_GB} GB. Check the Maximize Build Space step."
+            exit 1
+          fi
 
       - name: Generate Runtime Timestamp
         id: timestamp
@@ -58,8 +110,8 @@ jobs:
           ARTIFACT="metadata-${{ steps.timestamp.outputs.RUN_TS }}.db.zst"
 
           # --- background disk high-water sampler (every 10s) ---
-          # Records, per sample: available bytes on the work volume + bytes used by
-          # the working tree (spill buffer, engine file, db, vacuum copy, .zst).
+          # Per sample: available bytes on the work volume + bytes used by the
+          # working tree (spill buffer, engine file, db, vacuum copy, .zst).
           sample_disk() {
             while true; do
               avail=$(df -B1 --output=avail . 2>/dev/null | tail -1 | tr -d ' ')
@@ -100,12 +152,10 @@ jobs:
           PEAK_RSS_KB=${PEAK_RSS_KB:-0}
           RSS_MB=$(( PEAK_RSS_KB / 1024 ))
 
-          SAMPLES=$(wc -l < "$DISK_LOG" 2>/dev/null | tr -d ' ')
-          SAMPLES=${SAMPLES:-0}
+          SAMPLES=$(wc -l < "$DISK_LOG" 2>/dev/null | tr -d ' '); SAMPLES=${SAMPLES:-0}
           MIN_AVAIL=$(awk 'NR==1{m=$1} $1<m{m=$1} END{print (NR? m : 0)+0}' "$DISK_LOG" 2>/dev/null)
           MAX_USED=$(awk 'BEGIN{m=0} $2>m{m=$2} END{print m+0}' "$DISK_LOG" 2>/dev/null)
-          MIN_AVAIL=${MIN_AVAIL:-0}
-          MAX_USED=${MAX_USED:-0}
+          MIN_AVAIL=${MIN_AVAIL:-0}; MAX_USED=${MAX_USED:-0}
           AVAIL_GB=$(awk "BEGIN{printf \"%.2f\", $MIN_AVAIL/1073741824}")
           USED_GB=$(awk "BEGIN{printf \"%.2f\", $MAX_USED/1073741824}")
 
@@ -117,6 +167,8 @@ jobs:
           DB_MB=0;  [ -f metadata.db ] && DB_MB=$(( $(stat -c%s metadata.db) / 1048576 ))
           ART_MB=0; [ -f "$ARTIFACT" ] && ART_MB=$(( $(stat -c%s "$ARTIFACT") / 1048576 ))
 
+          DISK_FLOOR_BYTES=$(( DISK_HEADROOM_GB * 1073741824 ))
+
           # --- human-readable report -> job summary + log ---
           {
             echo "## Pipeline guardrail report"
@@ -124,7 +176,7 @@ jobs:
             echo "| Metric | Value | Limit |"
             echo "|---|---|---|"
             echo "| Peak RSS | ${RSS_MB} MB | ${MAX_RSS_MB} MB |"
-            echo "| Min free disk | ${AVAIL_GB} GB | ${MIN_DISK_AVAIL_GB} GB |"
+            echo "| Min free disk | ${AVAIL_GB} GB | ${DISK_HEADROOM_GB} GB |"
             echo "| Peak working-set disk | ${USED_GB} GB | - |"
             echo "| Pipeline time | ${PIPE_MIN} min | - |"
             echo "| Compression time | ${ZSTD_MIN} min | - |"
@@ -139,11 +191,14 @@ jobs:
             echo "PY_EXIT=$PY_EXIT"
             echo "ZSTD_EXIT=$ZSTD_EXIT"
             echo "RSS_MB=$RSS_MB"
+            echo "MAX_RSS_MB=$MAX_RSS_MB"
             echo "MIN_AVAIL=$MIN_AVAIL"
+            echo "DISK_FLOOR_BYTES=$DISK_FLOOR_BYTES"
             echo "SAMPLES=$SAMPLES"
             echo "TOTAL_SECS=$TOTAL_SECS"
             echo "TOTAL_MIN=$TOTAL_MIN"
             echo "AVAIL_GB=$AVAIL_GB"
+            echo "MAX_RUNTIME_MIN=$MAX_RUNTIME_MIN"
           } > guardrail_metrics.env
 
           # Fail this step immediately only on a hard process error (no artifact to
@@ -172,17 +227,18 @@ jobs:
           set -a; . ./guardrail_metrics.env; set +a
 
           FAIL=0
-          if [ "${RSS_MB:-0}" -gt "$MAX_RSS_MB" ]; then
-            echo "::error::Peak RSS ${RSS_MB}MB exceeded ceiling ${MAX_RSS_MB}MB"; FAIL=1
+          # RAM ceiling (peak RSS vs min(target, actual) - headroom)
+          if [ "${RSS_MB:-0}" -gt "${MAX_RSS_MB:-0}" ]; then
+            echo "::error::Peak RSS ${RSS_MB}MB exceeded RAM ceiling ${MAX_RSS_MB}MB (free-tier envelope)"; FAIL=1
           fi
-          if [ "${SAMPLES:-0}" -gt 0 ] && awk "BEGIN{exit !(${MIN_AVAIL:-0} < $MIN_DISK_AVAIL_GB*1073741824)}"; then
-            echo "::error::Free disk fell to ${AVAIL_GB}GB, below ${MIN_DISK_AVAIL_GB}GB floor"; FAIL=1
+          # Storage floor (free disk never below headroom)
+          if [ "${SAMPLES:-0}" -gt 0 ] && awk "BEGIN{exit !(${MIN_AVAIL:-0} < ${DISK_FLOOR_BYTES:-0})}"; then
+            echo "::error::Free disk fell to ${AVAIL_GB}GB, below the ${DISK_HEADROOM_GB}GB floor"; FAIL=1
           fi
-          if [ "${TOTAL_SECS:-0}" -gt $(( MAX_RUNTIME_MIN * 60 )) ]; then
+          # Runtime ceiling (soft, below the 6h hard cap)
+          if [ "${TOTAL_SECS:-0}" -gt $(( ${MAX_RUNTIME_MIN:-300} * 60 )) ]; then
             echo "::error::Total runtime ${TOTAL_MIN}min exceeded ${MAX_RUNTIME_MIN}min"; FAIL=1
           fi
 
-          if [ "$FAIL" -eq 0 ]; then
-            echo "All guardrails within limits."
-          fi
+          if [ "$FAIL" -eq 0 ]; then echo "All guardrails within the free-tier runner envelope."; fi
           exit "$FAIL"

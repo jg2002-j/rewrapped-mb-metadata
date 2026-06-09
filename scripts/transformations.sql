@@ -8,12 +8,18 @@
 CREATE OR REPLACE MACRO norm(s) AS
     REGEXP_REPLACE(REGEXP_REPLACE(LOWER(s), '[^\p{L}\p{N}\s]', '', 'g'), '\s+', ' ', 'g');
 
+-- NOTE ON MEMORY: the large intermediates below are ordinary CREATE TABLE (not
+-- CREATE TEMP TABLE) on purpose. Temp tables live in DuckDB's in-memory catalog
+-- and tend to stay resident; ordinary tables live in the on-disk engine file
+-- where the buffer manager can page them out under the memory_limit. This trades
+-- RAM (the hard free-tier ceiling) for ephemeral disk (where there is headroom).
+
 -- Step 0: Normalize every recording ONCE (name + length bucket), then drop the
 -- heavy raw_recording table. Nothing downstream needs the raw recording name,
 -- only the normalized form, its gid, artist_credit and length. Computing the
 -- regex a single time (instead of twice, once per join site) and joining on the
 -- stored key turns the later coverage map into a clean hash equi-join.
-CREATE TEMP TABLE temp_recording_norm AS
+CREATE TABLE temp_recording_norm AS
 SELECT id,
        gid,
        artist_credit,
@@ -23,16 +29,16 @@ SELECT id,
 FROM raw_recording;
 
 -- Step 1: Pre-Projection Pattern for Large Auxiliary Tables
-CREATE TEMP TABLE temp_official_releases AS
+CREATE TABLE temp_official_releases AS
 SELECT id, release_group, artist_credit
 FROM raw_release
 WHERE status = 1;
 
-CREATE TEMP TABLE temp_release_names AS
+CREATE TABLE temp_release_names AS
 SELECT id, name
 FROM raw_release;
 
-CREATE TEMP TABLE temp_earliest_dates AS
+CREATE TABLE temp_earliest_dates AS
 WITH release_dates_combined AS (
     SELECT release, date_year, date_month, date_day FROM raw_release_country
     UNION ALL
@@ -66,8 +72,11 @@ DROP TABLE raw_release_unknown_country;
 -- (the largest raw table, raw_recording, has just been dropped).
 CHECKPOINT;
 
--- Step 2: Ordered Aggregation inside a pure hash pipeline
-CREATE TEMP TABLE temp_canonical_rank AS
+-- Step 2: Canonical ranking. One external sort (ROW_NUMBER ... QUALIFY = 1)
+-- instead of five ordered FIRST() aggregates: a single pass that DuckDB can
+-- spill to the temp directory, which is far easier on memory than buffering
+-- ordered-aggregate state for every group.
+CREATE TABLE temp_canonical_rank AS
 WITH scored_recordings AS (
     SELECT rec.gid AS recording_mbid,
            rec.length AS raw_length,
@@ -98,21 +107,25 @@ SELECT
     normalized_rec_name,
     artist_credit,
     length_bucket,
-    FIRST(recording_mbid ORDER BY evaluation_score DESC, normalized_release_date ASC, release_group_mbid ASC) AS canonical_recording_mbid,
-    FIRST(release_group_mbid ORDER BY evaluation_score DESC, normalized_release_date ASC, release_group_mbid ASC) AS release_group_mbid,
-    FIRST(release_group_title ORDER BY evaluation_score DESC, normalized_release_date ASC, release_group_mbid ASC) AS release_group_title,
-    FIRST(release_group_type ORDER BY evaluation_score DESC, normalized_release_date ASC, release_group_mbid ASC) AS release_group_type,
-    FIRST(raw_length ORDER BY evaluation_score DESC, normalized_release_date ASC, release_group_mbid ASC) AS length
+    recording_mbid       AS canonical_recording_mbid,
+    release_group_mbid,
+    release_group_title,
+    release_group_type,
+    raw_length           AS length
 FROM scored_recordings
-GROUP BY normalized_rec_name, artist_credit, length_bucket;
+QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY normalized_rec_name, artist_credit, length_bucket
+    ORDER BY evaluation_score DESC, normalized_release_date ASC, release_group_mbid ASC
+) = 1;
 
 -- Trigger strict phased drop #2
 DROP TABLE raw_release_group;
 DROP TABLE raw_rg_type;
 DROP TABLE temp_earliest_dates;
+CHECKPOINT;
 
--- Step 3: Global Link Coverage Map -- now a clean equi-join on the precomputed key
-CREATE TEMP TABLE temp_all_canonical_recordings AS
+-- Step 3: Global Link Coverage Map -- a clean equi-join on the precomputed key
+CREATE TABLE temp_all_canonical_recordings AS
 SELECT DISTINCT rec.id AS recording_id, rec.gid AS recording_mbid, tcr.canonical_recording_mbid
 FROM temp_recording_norm rec
          JOIN temp_canonical_rank tcr
@@ -121,7 +134,7 @@ FROM temp_recording_norm rec
                   AND rec.length_bucket = tcr.length_bucket;
 
 -- Step 4: Index precomputed data mappings
-CREATE TEMP TABLE artist_wikidata_map AS
+CREATE TABLE artist_wikidata_map AS
 SELECT lau.entity0 AS artist_id, REGEXP_EXTRACT(u.url, '(Q[0-9]+)', 1) AS wikidata_id
 FROM raw_l_artist_url lau
          JOIN raw_url u ON lau.entity1 = u.id
@@ -187,6 +200,7 @@ DROP TABLE raw_medium;
 DROP TABLE temp_release_names;
 DROP TABLE temp_official_releases;
 DROP TABLE temp_recording_norm;
+CHECKPOINT;
 
 -- Step 7: Funnel all URL links into their canonical target IDs.
 -- Apple Music album links carry the TRACK id in the `?i=` query parameter, so it
