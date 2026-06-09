@@ -2,6 +2,9 @@ import os
 import sys
 import time
 import logging
+from collections import OrderedDict
+from contextlib import contextmanager
+
 import duckdb
 from utils import stream_and_load_musicbrainz, cleanup_temp_files
 from schema import initialize_native_sqlite_schema, apply_optimized_indexes
@@ -20,7 +23,36 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # The output database is written to the CWD so the CI "Compress Output Database"
 # step (which runs from the repo root) finds it by the same name.
-TARGET_SQLITE_NAME = "mb_metadata.db"
+TARGET_SQLITE_NAME = "metadata.db"
+
+# Ordered record of how long each phase took, printed as a summary at the end
+# (and on failure, so a crash still shows where the time went).
+_PHASE_TIMES = OrderedDict()
+
+
+@contextmanager
+def phase(name):
+    """Time a pipeline phase and log its duration; accumulate for the summary."""
+    logger.info(f"[PHASE START] {name}")
+    start = time.time()
+    try:
+        yield
+    finally:
+        elapsed = time.time() - start
+        _PHASE_TIMES[name] = _PHASE_TIMES.get(name, 0.0) + elapsed
+        logger.info(f"[PHASE DONE ] {name} -- {elapsed:.2f}s")
+
+
+def _log_phase_summary(total_elapsed):
+    logger.info("=" * 60)
+    logger.info("PHASE TIMING SUMMARY")
+    logger.info("-" * 60)
+    for name, secs in _PHASE_TIMES.items():
+        pct = (secs / total_elapsed * 100.0) if total_elapsed > 0 else 0.0
+        logger.info(f"  {name:<34} {secs:>9.2f}s  ({pct:4.1f}%)")
+    logger.info("-" * 60)
+    logger.info(f"  {'TOTAL':<34} {total_elapsed:>9.2f}s")
+    logger.info("=" * 60)
 
 
 def main():
@@ -37,27 +69,31 @@ def main():
     con = duckdb.connect("engine_runtime.duckdb")
 
     try:
-        logger.info("Configuring engine hardware allocation boundaries...")
-        con.execute("SET memory_limit='5.5GB';")
-        con.execute("SET max_temp_directory_size='10GB';")
-        con.execute("SET temp_directory='duckdb_spill_buffer';")
-        # Lower peak memory on large aggregations/sorts; we never rely on row order.
-        con.execute("SET preserve_insertion_order=false;")
-        con.execute(f"SET threads={max(1, os.cpu_count() or 2)};")
+        with phase("engine_configuration"):
+            logger.info("Configuring engine hardware allocation boundaries...")
+            con.execute("SET memory_limit='5.5GB';")
+            con.execute("SET max_temp_directory_size='10GB';")
+            con.execute("SET temp_directory='duckdb_spill_buffer';")
+            # Lower peak memory on large aggregations/sorts; we never rely on row order.
+            con.execute("SET preserve_insertion_order=false;")
+            con.execute(f"SET threads={max(1, os.cpu_count() or 2)};")
 
-        con.execute("INSTALL sqlite;")
-        con.execute("LOAD sqlite;")
+            con.execute("INSTALL sqlite;")
+            con.execute("LOAD sqlite;")
 
-        # Step 1: Initialize real SQLite database via native sqlite3 library calls
-        if os.path.exists(target_sqlite_path):
-            os.remove(target_sqlite_path)
-        initialize_native_sqlite_schema(target_sqlite_path)
+            # Step 1: Initialize real SQLite database via native sqlite3 library calls
+            if os.path.exists(target_sqlite_path):
+                os.remove(target_sqlite_path)
+            initialize_native_sqlite_schema(target_sqlite_path)
 
-        # Attach the genuine SQLite database to our main streaming engine context
-        con.execute(f"ATTACH '{target_sqlite_path}' AS target_sqlite (TYPE SQLITE);")
+            # Attach the genuine SQLite database to our main streaming engine context
+            con.execute(f"ATTACH '{target_sqlite_path}' AS target_sqlite (TYPE SQLITE);")
 
         # Step 2: Stream, extract, and load raw musicbrainz data tables
-        stream_and_load_musicbrainz(con)
+        # (download + bz2 decompression + read_csv staging; per-table timings
+        # are logged inside stream_and_load_musicbrainz).
+        with phase("ingest_stream_and_load"):
+            stream_and_load_musicbrainz(con)
 
         # Step 3: Run transformation workflows
         transform_script_path = os.path.join(BASE_DIR, "transformations.sql")
@@ -68,15 +104,16 @@ def main():
         with open(transform_script_path, "r", encoding="utf-8") as f:
             sql_script = f.read()
 
-        logger.info("Executing pure hash pipelines and phased table drop reductions...")
-        tx_start = time.time()
-        con.execute(sql_script)
-        logger.info(f"Target insertions and normalization mappings finalized in {time.time() - tx_start:.2f}s")
+        with phase("transformations_sql"):
+            logger.info("Executing pure hash pipelines and phased table drop reductions...")
+            con.execute(sql_script)
 
         # Step 4: Detach, release the engine's memory, then build indices natively
         con.execute("DETACH target_sqlite;")
         con.close()  # free DuckDB's ~5.5GB before the native SQLite index build
-        apply_optimized_indexes(target_sqlite_path)
+
+        with phase("index_and_compact"):
+            apply_optimized_indexes(target_sqlite_path)
 
         logger.info("=" * 60)
         logger.info(f"SUCCESS: Pipeline processing finalized in {time.time() - start_time:.2f}s")
@@ -93,6 +130,7 @@ def main():
         except Exception:
             pass
         cleanup_temp_files()
+        _log_phase_summary(time.time() - start_time)
 
 
 if __name__ == "__main__":
