@@ -32,10 +32,6 @@ jobs:
           # Pin DuckDB so a future breaking release can't silently change behaviour.
           pip install "duckdb>=1.0,<2.0"
 
-      # NOTE: the production dump is downloaded by the pipeline itself
-      # (utils.stream_and_load_musicbrainz streams it directly under --prod),
-      # so there is no separate download step here.
-
       - name: Generate Runtime Timestamp
         id: timestamp
         run: echo "RUN_TS=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT

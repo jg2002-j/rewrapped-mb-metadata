@@ -101,10 +101,11 @@ MUSICBRAINZ_MANIFEST = {
             "release": {"type": "INTEGER", "pos": 1, "nullable": False, "desc": "Foreign key parent binding directly to raw_release.id"},
             "position": {"type": "INTEGER", "pos": 2, "nullable": False, "desc": "Volume arrangement numerical order"},
             "format": {"type": "INTEGER", "pos": 3, "nullable": True, "desc": "Classification format code identifier"},
-            "name": {"type": "VARCHAR", "pos": 4, "nullable": True, "desc": "Specific title labeling for volume subset"},
-            "last_updated": {"type": "VARCHAR", "pos": 5, "nullable": False, "desc": "Database alteration tracking timestamp"},
-            "edits_pending": {"type": "INTEGER", "pos": 6, "nullable": False, "desc": "Open moderation requests pending apply"},
-            "gid": {"type": "VARCHAR", "pos": 7, "nullable": False, "desc": "Global Unique Identifier (UUID)"}
+            "name": {"type": "VARCHAR", "pos": 4, "nullable": False, "desc": "Specific title labeling for volume subset (DEFAULT '')"},
+            "edits_pending": {"type": "INTEGER", "pos": 5, "nullable": False, "desc": "Open moderation requests pending apply"},
+            "last_updated": {"type": "VARCHAR", "pos": 6, "nullable": False, "desc": "Database alteration tracking timestamp"},
+            "track_count": {"type": "INTEGER", "pos": 7, "nullable": False, "desc": "Cached number of tracks on this medium"},
+            "gid": {"type": "VARCHAR", "pos": 8, "nullable": False, "desc": "Global Unique Identifier (UUID)"}
         }
     },
     "release": {
@@ -223,7 +224,8 @@ MUSICBRAINZ_MANIFEST = {
             "name": {"type": "VARCHAR", "pos": 1, "nullable": False, "desc": "Format string display literal label (e.g., 'Album', 'Single')"},
             "parent": {"type": "INTEGER", "pos": 2, "nullable": True, "desc": "Hierarchy grouping parent code structural lookup key"},
             "child_order": {"type": "INTEGER", "pos": 3, "nullable": False, "desc": "Internal arrangement presentation weight"},
-            "description": {"type": "VARCHAR", "pos": 4, "nullable": True, "desc": "Text description outlining type limits"}
+            "description": {"type": "VARCHAR", "pos": 4, "nullable": True, "desc": "Text description outlining type limits"},
+            "gid": {"type": "VARCHAR", "pos": 5, "nullable": False, "desc": "Global Unique Identifier (UUID)"}
         }
     }
 }

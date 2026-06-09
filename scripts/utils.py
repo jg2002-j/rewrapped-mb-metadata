@@ -101,6 +101,7 @@ def stream_and_load_musicbrainz(con):
                         header=False, 
                         nullstr=$$\\N$$, 
                         quote='',
+                        escape='',
                         all_varchar=False,
                         auto_detect=False,
                         strict_mode=False,
