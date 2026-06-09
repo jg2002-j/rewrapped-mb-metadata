@@ -29,19 +29,12 @@ jobs:
       - name: Install System and Python Dependencies
         run: |
           sudo apt-get update && sudo apt-get install -y zstd curl tar
-          pip install duckdb
+          # Pin DuckDB so a future breaking release can't silently change behaviour.
+          pip install "duckdb>=1.0,<2.0"
 
-#      - name: Download MusicBrainz Cloud Dumps
-#        run: |
-#          echo "Resolving the latest weekly export directory name..."
-#          LATEST_FOLDER=$(curl -sL "https://data.musicbrainz.org/pub/musicbrainz/data/fullexport/LATEST")
-#          echo "Targeting active timestamp folder: $LATEST_FOLDER"
-#
-#          echo "Streaming data packages into workspace..."
-#          curl -SLf "https://ftp.musicbrainz.org/pub/musicbrainz/data/fullexport/${LATEST_FOLDER}/mbdump.tar.bz2" \
-#            -o mbdump.tar.bz2
-#
-#          echo "Downloads completed successfully."
+      # NOTE: the production dump is downloaded by the pipeline itself
+      # (utils.stream_and_load_musicbrainz streams it directly under --prod),
+      # so there is no separate download step here.
 
       - name: Generate Runtime Timestamp
         id: timestamp
@@ -52,7 +45,7 @@ jobs:
 
       - name: Compress Output Database
         run: |
-          zstd -19 metadata.db -o "metadata-${{ steps.timestamp.outputs.RUN_TS }}.db.zst"
+          zstd -T0 --ultra -22 mb_metadata.db -o "metadata-${{ steps.timestamp.outputs.RUN_TS }}.db.zst"
 
       - name: Upload Finished Artifacts
         uses: actions/upload-artifact@v4

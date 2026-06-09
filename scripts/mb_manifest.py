@@ -6,6 +6,11 @@ Source of Truth aligned with:
 
 This dictionary acts as the immutable structural specification for the raw data dumps.
 Modifications to column layouts by MetaBrainz should be updated here.
+
+Each table also declares a "keep" list: the subset of columns the transformation
+pipeline actually consumes. The loader declares every column for positional
+alignment but only persists the "keep" subset, which dramatically reduces the
+working-set memory, spill, and final size.
 """
 
 MUSICBRAINZ_MANIFEST = {
@@ -13,6 +18,7 @@ MUSICBRAINZ_MANIFEST = {
         "raw_table_name": "raw_artist",
         "dump_file_name": "artist",
         "description": "Individual performers, groups, collaborations, or entities involved in performance credits.",
+        "keep": ["id", "gid", "name"],
         "columns": {
             "id": {"type": "INTEGER", "pos": 0, "nullable": False, "desc": "Internal database serial surrogate key"},
             "gid": {"type": "VARCHAR", "pos": 1, "nullable": False, "desc": "Global Unique Identifier (MBID)"},
@@ -39,6 +45,7 @@ MUSICBRAINZ_MANIFEST = {
         "raw_table_name": "raw_artist_credit_name",
         "dump_file_name": "artist_credit_name",
         "description": "Join table breaking out individual billing positions and credits inside a multi-artist composite.",
+        "keep": ["artist_credit", "position", "artist", "name"],
         "columns": {
             "artist_credit": {"type": "INTEGER", "pos": 0, "nullable": False, "desc": "Composite cluster ID identifier"},
             "position": {"type": "INTEGER", "pos": 1, "nullable": False, "desc": "Billing array indexing sort sequence (0 = primary)"},
@@ -51,6 +58,7 @@ MUSICBRAINZ_MANIFEST = {
         "raw_table_name": "raw_recording",
         "dump_file_name": "recording",
         "description": "Distinct audio tracks, cuts, or masters characterized by an intrinsic length duration metric.",
+        "keep": ["id", "gid", "name", "artist_credit", "length"],
         "columns": {
             "id": {"type": "INTEGER", "pos": 0, "nullable": False, "desc": "Internal database serial surrogate key"},
             "gid": {"type": "VARCHAR", "pos": 1, "nullable": False, "desc": "Global Unique Identifier (MBID)"},
@@ -67,6 +75,7 @@ MUSICBRAINZ_MANIFEST = {
         "raw_table_name": "raw_track",
         "dump_file_name": "track",
         "description": "Physical realization of a recording on a specific media line positioning.",
+        "keep": ["id", "recording", "medium", "name"],
         "columns": {
             "id": {"type": "INTEGER", "pos": 0, "nullable": False, "desc": "Internal surrogate identifier"},
             "gid": {"type": "VARCHAR", "pos": 1, "nullable": False, "desc": "Global Unique Track Identifier"},
@@ -86,6 +95,7 @@ MUSICBRAINZ_MANIFEST = {
         "raw_table_name": "raw_medium",
         "dump_file_name": "medium",
         "description": "Multi-disc segments or volume layers separating distinct groupings in a release package.",
+        "keep": ["id", "release"],
         "columns": {
             "id": {"type": "INTEGER", "pos": 0, "nullable": False, "desc": "Internal surrogate identifier"},
             "release": {"type": "INTEGER", "pos": 1, "nullable": False, "desc": "Foreign key parent binding directly to raw_release.id"},
@@ -101,6 +111,7 @@ MUSICBRAINZ_MANIFEST = {
         "raw_table_name": "raw_release",
         "dump_file_name": "release",
         "description": "Tangible trade physical issuance or programmatic digital launch containing mediums.",
+        "keep": ["id", "name", "artist_credit", "release_group", "status"],
         "columns": {
             "id": {"type": "INTEGER", "pos": 0, "nullable": False, "desc": "Internal surrogate identifier"},
             "gid": {"type": "VARCHAR", "pos": 1, "nullable": False, "desc": "Global Unique Release Identifier (MBID)"},
@@ -122,6 +133,7 @@ MUSICBRAINZ_MANIFEST = {
         "raw_table_name": "raw_release_group",
         "dump_file_name": "release_group",
         "description": "Abstract meta-record binding core albums, deluxe distributions, and local versions into an overarching single work group.",
+        "keep": ["id", "gid", "name", "artist_credit", "type"],
         "columns": {
             "id": {"type": "INTEGER", "pos": 0, "nullable": False, "desc": "Internal database surrogate unique identifier"},
             "gid": {"type": "VARCHAR", "pos": 1, "nullable": False, "desc": "Global Unique Release Group Identifier (MBID)"},
@@ -137,6 +149,7 @@ MUSICBRAINZ_MANIFEST = {
         "raw_table_name": "raw_release_country",
         "dump_file_name": "release_country",
         "description": "Market release date tracker detailing release distribution windows inside explicitly declared geo zones.",
+        "keep": ["release", "date_year", "date_month", "date_day"],
         "columns": {
             "release": {"type": "INTEGER", "pos": 0, "nullable": False, "desc": "Primary identifier linking back to raw_release.id"},
             "country": {"type": "INTEGER", "pos": 1, "nullable": False, "desc": "Geographic territory country code match tracking reference"},
@@ -149,17 +162,19 @@ MUSICBRAINZ_MANIFEST = {
         "raw_table_name": "raw_release_unknown_country",
         "dump_file_name": "release_unknown_country",
         "description": "Market release date tracker fallback holding timestamps where explicit country allocation boundaries are untracked.",
+        "keep": ["release", "date_year", "date_month", "date_day"],
         "columns": {
             "release": {"type": "INTEGER", "pos": 0, "nullable": False, "desc": "Primary identifier linking back to raw_release.id"},
             "date_year": {"type": "INTEGER", "pos": 1, "nullable": True, "desc": "Calendar year calculation point"},
             "date_month": {"type": "INTEGER", "pos": 2, "nullable": True, "desc": "Calendar month calculation point"},
-            "date_day": {"type": "INTEGER", "pos": 4, "nullable": True, "desc": "Calendar day calculation point"}
+            "date_day": {"type": "INTEGER", "pos": 3, "nullable": True, "desc": "Calendar day calculation point"}
         }
     },
     "url": {
         "raw_table_name": "raw_url",
         "dump_file_name": "url",
         "description": "External target Uniform Resource Locator web paths tracking public reference points.",
+        "keep": ["id", "url"],
         "columns": {
             "id": {"type": "INTEGER", "pos": 0, "nullable": False, "desc": "Internal database surrogate unique identifier"},
             "gid": {"type": "VARCHAR", "pos": 1, "nullable": False, "desc": "Global URL Node tracking Identifier"},
@@ -172,6 +187,7 @@ MUSICBRAINZ_MANIFEST = {
         "raw_table_name": "raw_l_recording_url",
         "dump_file_name": "l_recording_url",
         "description": "Entity relationship relational junction map linking specific recordings out to target URLs.",
+        "keep": ["entity0", "entity1"],
         "columns": {
             "id": {"type": "INTEGER", "pos": 0, "nullable": False, "desc": "Internal link instance tracker key"},
             "link": {"type": "INTEGER", "pos": 1, "nullable": False, "desc": "Structural linkage semantic structural behavior lookup id"},
@@ -186,6 +202,7 @@ MUSICBRAINZ_MANIFEST = {
         "raw_table_name": "raw_l_artist_url",
         "dump_file_name": "l_artist_url",
         "description": "Entity relationship relational junction map linking individual artists out to external profiles (e.g. Wikidata).",
+        "keep": ["entity0", "entity1"],
         "columns": {
             "id": {"type": "INTEGER", "pos": 0, "nullable": False, "desc": "Internal link instance tracker key"},
             "link": {"type": "INTEGER", "pos": 1, "nullable": False, "desc": "Structural linkage semantic structural behavior lookup id"},
@@ -200,6 +217,7 @@ MUSICBRAINZ_MANIFEST = {
         "raw_table_name": "raw_rg_type",
         "dump_file_name": "release_group_primary_type",
         "description": "Static reference dictionary mapping release group classification integer ids out to physical names.",
+        "keep": ["id", "name"],
         "columns": {
             "id": {"type": "INTEGER", "pos": 0, "nullable": False, "desc": "Primary key definition dictionary tracking index"},
             "name": {"type": "VARCHAR", "pos": 1, "nullable": False, "desc": "Format string display literal label (e.g., 'Album', 'Single')"},

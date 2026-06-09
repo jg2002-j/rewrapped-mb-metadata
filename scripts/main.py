@@ -13,6 +13,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger("pipeline_engine")
 
+# Anchor code assets (transformations.sql) to this file's directory so the
+# pipeline works regardless of the current working directory (e.g. when the
+# workflow runs `python scripts/main.py` from the repo root).
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# The output database is written to the CWD so the CI "Compress Output Database"
+# step (which runs from the repo root) finds it by the same name.
+TARGET_SQLITE_NAME = "mb_metadata.db"
+
+
 def main():
     start_time = time.time()
     logger.info("=" * 60)
@@ -20,9 +30,9 @@ def main():
     logger.info("=" * 60)
 
     cleanup_temp_files()
-    target_sqlite_path = "mb_metadata.db"
+    target_sqlite_path = TARGET_SQLITE_NAME
 
-    # Initialize the high-performance in-memory DuckDB instance
+    # On-disk DuckDB engine file (it spills to disk under the configured limits).
     logger.info("Initializing DuckDB storage engine runtime connection...")
     con = duckdb.connect("engine_runtime.duckdb")
 
@@ -31,6 +41,9 @@ def main():
         con.execute("SET memory_limit='5.5GB';")
         con.execute("SET max_temp_directory_size='10GB';")
         con.execute("SET temp_directory='duckdb_spill_buffer';")
+        # Lower peak memory on large aggregations/sorts; we never rely on row order.
+        con.execute("SET preserve_insertion_order=false;")
+        con.execute(f"SET threads={max(1, os.cpu_count() or 2)};")
 
         con.execute("INSTALL sqlite;")
         con.execute("LOAD sqlite;")
@@ -47,7 +60,7 @@ def main():
         stream_and_load_musicbrainz(con)
 
         # Step 3: Run transformation workflows
-        transform_script_path = "transformations.sql"
+        transform_script_path = os.path.join(BASE_DIR, "transformations.sql")
         if not os.path.exists(transform_script_path):
             raise FileNotFoundError(f"Missing required execution asset: {transform_script_path}")
 
@@ -60,8 +73,9 @@ def main():
         con.execute(sql_script)
         logger.info(f"Target insertions and normalization mappings finalized in {time.time() - tx_start:.2f}s")
 
-        # Step 4: Detach to free up file handles and build indices natively
+        # Step 4: Detach, release the engine's memory, then build indices natively
         con.execute("DETACH target_sqlite;")
+        con.close()  # free DuckDB's ~5.5GB before the native SQLite index build
         apply_optimized_indexes(target_sqlite_path)
 
         logger.info("=" * 60)
@@ -74,8 +88,12 @@ def main():
         logger.critical("=" * 60)
         raise e
     finally:
-        con.close()
+        try:
+            con.close()  # idempotent; safe even if already closed above
+        except Exception:
+            pass
         cleanup_temp_files()
+
 
 if __name__ == "__main__":
     main()

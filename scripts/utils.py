@@ -15,6 +15,20 @@ logger = logging.getLogger("pipeline_engine")
 # Dynamically reverse-engineer dump identities using the schema manifest contract
 TABLE_MAPPING = {meta["dump_file_name"]: meta["raw_table_name"] for meta in MUSICBRAINZ_MANIFEST.values()}
 
+
+def _assert_contiguous_positions(internal_name, columns_config):
+    """Fail loudly if a manifest table's column positions are not 0..n-1.
+
+    The loader maps file columns positionally by *order*, so a gap or duplicate
+    in the declared positions would silently misalign an entire table.
+    """
+    positions = sorted(meta["pos"] for meta in columns_config.values())
+    if positions != list(range(len(positions))):
+        raise ValueError(
+            f"Manifest positions for '{internal_name}' are not contiguous 0..n-1: {positions}"
+        )
+
+
 def stream_and_load_musicbrainz(con):
     """Executes an isolated streaming extraction pipeline without running out of disk space."""
     is_prod = os.environ.get("GITHUB_ACTIONS") == "true" or "--prod" in sys.argv
@@ -58,11 +72,22 @@ def stream_and_load_musicbrainz(con):
 
                 # Fetch structural schema layout from our manifest specification code file
                 manifest_key = next(k for k, v in MUSICBRAINZ_MANIFEST.items() if v["dump_file_name"] == internal_name)
-                columns_config = MUSICBRAINZ_MANIFEST[manifest_key]["columns"]
+                manifest_entry = MUSICBRAINZ_MANIFEST[manifest_key]
+                columns_config = manifest_entry["columns"]
+
+                # Guard against silently-misaligned tables before we trust the layout
+                _assert_contiguous_positions(internal_name, columns_config)
 
                 # Enforce chronological ordering based on physical layout index configuration
                 sorted_columns = sorted(columns_config.items(), key=lambda x: x[1]["pos"])
                 columns_def = ", ".join([f"'{col_name}': '{col_meta['type']}'" for col_name, col_meta in sorted_columns])
+
+                # Only persist the columns the transformations actually consume. This
+                # is the dominant memory/disk/size win: full-width tables (e.g. 19-col
+                # artist) collapse to the 2-3 columns we need. read_csv still declares
+                # every column for positional alignment; the SELECT projects.
+                keep_cols = manifest_entry.get("keep")
+                projection = ", ".join(keep_cols) if keep_cols else "*"
 
                 parse_start = time.time()
                 con.execute(f"DROP TABLE IF EXISTS {target_table};")
@@ -70,7 +95,7 @@ def stream_and_load_musicbrainz(con):
                 # Hardened configuration flags bypass dialect sniffer, preventing string interpolation failures
                 con.execute(f"""
                     CREATE TABLE {target_table} AS 
-                    SELECT * FROM read_csv(
+                    SELECT {projection} FROM read_csv(
                         '{temp_tsv_path}', 
                         delim='\\t', 
                         header=False, 
@@ -90,6 +115,7 @@ def stream_and_load_musicbrainz(con):
 
     if is_prod:
         proc.wait()
+
 
 def cleanup_temp_files():
     """Purges intermediate files and temporary directory tracking structures to release disk sectors."""

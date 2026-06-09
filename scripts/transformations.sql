@@ -1,3 +1,27 @@
+-- ============================================================================
+-- Normalization contract (SINGLE SOURCE OF TRUTH for text matching).
+-- The downstream service MUST apply this exact transformation:
+--   lowercase -> strip every char that is not a Unicode letter/number/space
+--             -> collapse runs of whitespace to a single space
+-- If the two sides diverge, the text fallback will silently miss.
+-- ============================================================================
+CREATE OR REPLACE MACRO norm(s) AS
+    REGEXP_REPLACE(REGEXP_REPLACE(LOWER(s), '[^\p{L}\p{N}\s]', '', 'g'), '\s+', ' ', 'g');
+
+-- Step 0: Normalize every recording ONCE (name + length bucket), then drop the
+-- heavy raw_recording table. Nothing downstream needs the raw recording name,
+-- only the normalized form, its gid, artist_credit and length. Computing the
+-- regex a single time (instead of twice, once per join site) and joining on the
+-- stored key turns the later coverage map into a clean hash equi-join.
+CREATE TEMP TABLE temp_recording_norm AS
+SELECT id,
+       gid,
+       artist_credit,
+       length,
+       norm(name)                              AS normalized_name,
+       ROUND(COALESCE(length, 0) / 5000.0)     AS length_bucket
+FROM raw_recording;
+
 -- Step 1: Pre-Projection Pattern for Large Auxiliary Tables
 CREATE TEMP TABLE temp_official_releases AS
 SELECT id, release_group, artist_credit
@@ -17,22 +41,30 @@ WITH release_dates_combined AS (
 SELECT release,
        MIN(
                COALESCE(
-                       TRY_CAST(
-                               MAKE_DATE(
-                                       COALESCE(NULLIF(date_year, 0), 9999),
-                                       COALESCE(NULLIF(date_month, 0), 1),
-                                       COALESCE(NULLIF(date_day, 0), 1)
-                               ) AS DATE
-                       ), '9999-12-31'::DATE
+                   -- TRY() swallows invalid calendar dates (e.g. Feb 30, which
+                   -- editors can enter). MAKE_DATE throws on those BEFORE any cast
+                   -- runs, so TRY_CAST cannot catch it; an unguarded MAKE_DATE
+                   -- would abort the whole build on a single bad row.
+                       TRY(MAKE_DATE(
+                               COALESCE(NULLIF(date_year, 0), 9999),
+                               COALESCE(NULLIF(date_month, 0), 1),
+                               COALESCE(NULLIF(date_day, 0), 1)
+                           )),
+                       '9999-12-31'::DATE
                )
        ) AS normalized_release_date
 FROM release_dates_combined
 GROUP BY release;
 
--- Trigger strict phased drop #1
+-- Trigger strict phased drop #1 (raw_recording is now represented by temp_recording_norm)
+DROP TABLE raw_recording;
 DROP TABLE raw_release;
 DROP TABLE raw_release_country;
 DROP TABLE raw_release_unknown_country;
+
+-- Reclaim the freed pages so the on-disk engine file high-water-mark stays low
+-- (the largest raw table, raw_recording, has just been dropped).
+CHECKPOINT;
 
 -- Step 2: Ordered Aggregation inside a pure hash pipeline
 CREATE TEMP TABLE temp_canonical_rank AS
@@ -42,9 +74,9 @@ WITH scored_recordings AS (
            rg.gid AS release_group_mbid,
            rg.name AS release_group_title,
            rg_type.name AS release_group_type,
-           REGEXP_REPLACE(REGEXP_REPLACE(LOWER(rec.name), '[^\p{L}\p{N}\s]', '', 'g'), '\s+', ' ', 'g') AS normalized_rec_name,
+           rec.normalized_name AS normalized_rec_name,
            rec.artist_credit,
-           ROUND(COALESCE(rec.length, 0) / 5000.0) AS length_bucket,
+           rec.length_bucket,
            CASE CAST(rg_type.name AS TEXT)
                WHEN 'Album' THEN 1000 WHEN 'EP' THEN 900 WHEN 'Single' THEN 800
                WHEN 'Soundtrack' THEN 700 WHEN 'Other' THEN 600 WHEN 'Broadcast' THEN 500
@@ -54,7 +86,7 @@ WITH scored_recordings AS (
                WHEN 'Compilation' THEN -1400 ELSE 0
                END + CASE WHEN rg.artist_credit = rec.artist_credit THEN 50 ELSE 0 END AS evaluation_score,
            COALESCE(erd.normalized_release_date, '9999-12-31'::DATE) AS normalized_release_date
-    FROM raw_recording rec
+    FROM temp_recording_norm rec
              JOIN raw_track t ON t.recording = rec.id
              JOIN raw_medium m ON t.medium = m.id
              JOIN temp_official_releases r ON m.release = r.id
@@ -79,14 +111,14 @@ DROP TABLE raw_release_group;
 DROP TABLE raw_rg_type;
 DROP TABLE temp_earliest_dates;
 
--- Step 3: Global Link Coverage Map
+-- Step 3: Global Link Coverage Map -- now a clean equi-join on the precomputed key
 CREATE TEMP TABLE temp_all_canonical_recordings AS
 SELECT DISTINCT rec.id AS recording_id, rec.gid AS recording_mbid, tcr.canonical_recording_mbid
-FROM raw_recording rec
+FROM temp_recording_norm rec
          JOIN temp_canonical_rank tcr
-              ON REGEXP_REPLACE(REGEXP_REPLACE(LOWER(rec.name), '[^\p{L}\p{N}\s]', '', 'g'), '\s+', ' ', 'g') = tcr.normalized_rec_name
+              ON rec.normalized_name = tcr.normalized_rec_name
                   AND rec.artist_credit = tcr.artist_credit
-                  AND ROUND(COALESCE(rec.length, 0) / 5000.0) = tcr.length_bucket;
+                  AND rec.length_bucket = tcr.length_bucket;
 
 -- Step 4: Index precomputed data mappings
 CREATE TEMP TABLE artist_wikidata_map AS
@@ -99,10 +131,13 @@ WHERE u.url LIKE '%wikidata.org%';
 DROP TABLE raw_l_artist_url;
 
 -- Step 5: Data compilation inserts for canonical nodes
+-- ANY_VALUE + GROUP BY guarantees exactly one row per release_group_mbid (title
+-- and type are functionally dependent on the gid), avoiding any PRIMARY KEY risk.
 INSERT INTO target_sqlite.release_group (release_group_mbid, release_group_title, release_group_type)
-SELECT DISTINCT release_group_mbid, release_group_title, release_group_type
+SELECT release_group_mbid, ANY_VALUE(release_group_title), ANY_VALUE(release_group_type)
 FROM temp_canonical_rank
-WHERE release_group_mbid IS NOT NULL;
+WHERE release_group_mbid IS NOT NULL
+GROUP BY release_group_mbid;
 
 INSERT INTO target_sqlite.recording (recording_mbid, release_group_mbid, length, primary_artist_mbid, primary_artist_name, primary_artist_wikidata_id)
 SELECT
@@ -113,7 +148,7 @@ SELECT
     ANY_VALUE(a.name),
     ANY_VALUE(awm.wikidata_id)
 FROM temp_canonical_rank tcr
-         LEFT JOIN raw_recording rec ON tcr.canonical_recording_mbid = rec.gid
+         LEFT JOIN temp_recording_norm rec ON tcr.canonical_recording_mbid = rec.gid
          LEFT JOIN raw_artist_credit_name acn ON rec.artist_credit = acn.artist_credit AND acn.position = 0
          LEFT JOIN raw_artist a ON acn.artist = a.id
          LEFT JOIN artist_wikidata_map awm ON a.id = awm.artist_id
@@ -122,7 +157,7 @@ GROUP BY tcr.canonical_recording_mbid;
 
 INSERT INTO target_sqlite.recording_artists (recording_mbid, artist_mbid, position, artist_name, artist_wikidata_id)
 SELECT rec.gid, a.gid, acn.position, a.name, awm.wikidata_id
-FROM raw_recording rec
+FROM temp_recording_norm rec
          JOIN raw_artist_credit_name acn ON rec.artist_credit = acn.artist_credit
          JOIN raw_artist a ON acn.artist = a.id
          LEFT JOIN artist_wikidata_map awm ON a.id = awm.artist_id
@@ -131,15 +166,15 @@ WHERE rec.gid IN (SELECT canonical_recording_mbid FROM temp_canonical_rank);
 -- Step 6: Targeted textual lookups specifically scoped to official releases (Executed BEFORE destroying Artist data)
 INSERT INTO target_sqlite.text_lookup (track_title, release_title, artist_name, recording_mbid)
 SELECT DISTINCT
-    REGEXP_REPLACE(REGEXP_REPLACE(LOWER(t.name), '[^\p{L}\p{N}\s]', '', 'g'), '\s+', ' ', 'g') AS track_title,
-    REGEXP_REPLACE(REGEXP_REPLACE(LOWER(rn.name), '[^\p{L}\p{N}\s]', '', 'g'), '\s+', ' ', 'g') AS release_title,
-    REGEXP_REPLACE(REGEXP_REPLACE(LOWER(a.name), '[^\p{L}\p{N}\s]', '', 'g'), '\s+', ' ', 'g') AS artist_name,
+    norm(t.name)  AS track_title,
+    norm(rn.name) AS release_title,
+    norm(a.name)  AS artist_name,
     map.canonical_recording_mbid AS recording_mbid
 FROM raw_track t
          JOIN raw_medium m ON t.medium = m.id
          JOIN temp_release_names rn ON m.release = rn.id
          JOIN temp_official_releases r ON r.id = rn.id
-         JOIN raw_recording rec ON t.recording = rec.id
+         JOIN temp_recording_norm rec ON t.recording = rec.id
          JOIN temp_all_canonical_recordings map ON rec.gid = map.recording_mbid
          JOIN raw_artist_credit_name acn ON rec.artist_credit = acn.artist_credit AND acn.position = 0
          JOIN raw_artist a ON acn.artist = a.id;
@@ -151,12 +186,19 @@ DROP TABLE raw_track;
 DROP TABLE raw_medium;
 DROP TABLE temp_release_names;
 DROP TABLE temp_official_releases;
-DROP TABLE raw_recording;
+DROP TABLE temp_recording_norm;
 
--- Step 7: Funnel all URL links into their canonical target IDs
+-- Step 7: Funnel all URL links into their canonical target IDs.
+-- Apple Music album links carry the TRACK id in the `?i=` query parameter, so it
+-- must be read BEFORE the query string is stripped. Everything else (Spotify,
+-- Apple song links, Tidal) uses the last path segment.
 INSERT INTO target_sqlite.link_lookup (url_identifier, provider, recording_mbid)
 SELECT DISTINCT
-    REGEXP_EXTRACT(REGEXP_REPLACE(u.url, '[\?#].*', ''), '([^/]+)$', 1) AS url_identifier,
+    CASE
+        WHEN u.url LIKE '%apple%' AND REGEXP_MATCHES(u.url, '[?&]i=[0-9]+')
+            THEN REGEXP_EXTRACT(u.url, '[?&]i=([0-9]+)', 1)
+        ELSE REGEXP_EXTRACT(REGEXP_REPLACE(u.url, '[\?#].*', ''), '([^/]+)$', 1)
+        END AS url_identifier,
     CASE
         WHEN u.url LIKE '%spotify%' THEN 'spotify'
         WHEN u.url LIKE '%apple%' THEN 'applemusic'
