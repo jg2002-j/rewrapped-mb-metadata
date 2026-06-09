@@ -132,3 +132,8 @@ def cleanup_temp_files():
             shutil.rmtree('duckdb_spill_buffer')
         except Exception:
             pass
+    if os.path.exists('sqlite_tmp'):
+        try:
+            shutil.rmtree('sqlite_tmp')
+        except Exception:
+            pass

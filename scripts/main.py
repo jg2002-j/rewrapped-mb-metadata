@@ -65,6 +65,16 @@ def main():
     cleanup_temp_files()
     target_sqlite_path = TARGET_SQLITE_NAME
 
+    # Direct SQLite's temp/sort files (used heavily by CREATE INDEX and VACUUM INTO)
+    # to the large work volume. On CI the default temp dir is /tmp on the SMALL root
+    # filesystem, which maximize-build-space can leave nearly full -- producing
+    # "database or disk is full" during the index build even though the work volume
+    # has tens of GB free. SQLite honours SQLITE_TMPDIR (then TMPDIR) on Unix; these
+    # are harmless on Windows (SQLite uses TMP/TEMP there).
+    sqlite_tmp = os.path.join(os.getcwd(), "sqlite_tmp")
+    os.makedirs(sqlite_tmp, exist_ok=True)
+    os.environ["SQLITE_TMPDIR"] = sqlite_tmp
+    os.environ["TMPDIR"] = sqlite_tmp
     # Resource guardrails (RAM / disk / runtime) enforcing the free-tier envelope,
     # locally and on CI alike. Pre-flight disk check fails fast before the long
     # ingest if the volume is too small.
@@ -131,7 +141,16 @@ def main():
 
         # Step 4: Detach, release the engine's memory, then build indices natively
         con.execute("DETACH target_sqlite;")
-        con.close()  # free DuckDB's ~5.5GB before the native SQLite index build
+        con.close()  # free DuckDB's memory before the native SQLite index build
+        # Reclaim the on-disk engine file (tens of GB after the intermediates)
+        # before the index build + VACUUM INTO, which need room for sort temp and
+        # the compacted copy.
+        for _f in ("engine_runtime.duckdb", "engine_runtime.duckdb.wal"):
+            try:
+                if os.path.exists(_f):
+                    os.remove(_f)
+            except Exception:
+                pass
 
         with phase("index_and_compact"):
             apply_optimized_indexes(target_sqlite_path)
