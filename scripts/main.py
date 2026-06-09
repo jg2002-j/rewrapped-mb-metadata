@@ -80,7 +80,7 @@ def main():
     # ingest if the volume is too small.
     guard_cfg = guardrails.GuardrailConfig()
     guardrails.preflight_disk_check(guard_cfg)
-    monitor = guardrails.GuardrailMonitor().start()
+    monitor = guardrails.GuardrailMonitor(hard_abort_mb=guard_cfg.hard_abort_mb()).start()
     pipeline_ok = False
 
     # On-disk DuckDB engine file (it spills to disk under the configured limits).
@@ -91,9 +91,12 @@ def main():
         with phase("engine_configuration"):
             logger.info("Configuring engine hardware allocation boundaries...")
             # All tunable via env so the budget can be adjusted without code edits.
-            # Defaults target the public free-tier runner (4 vCPU / 16 GB RAM):
-            # a 12 GB DuckDB budget leaves headroom for Python + OS under 16 GB.
-            mem_limit = os.environ.get("PIPELINE_MEMORY_LIMIT", "12GB")
+            # Targets the public 16 GB runner. NOTE: this is the *DuckDB* budget, not
+            # the box -- the OS, the GitHub runner agent, Python/DuckDB overhead, and
+            # the kernel page cache for the on-disk engine file all need room too.
+            # 12 GB peaked ~12.5 GB RSS and starved the 16 GB runner ("lost
+            # communication"); 10 GB keeps peak ~10.7 GB, leaving ~5 GB headroom.
+            mem_limit = os.environ.get("PIPELINE_MEMORY_LIMIT", "10GB")
             temp_limit = os.environ.get("PIPELINE_TEMP_LIMIT", "30GB")
             # DuckDB's per-operator memory scales with thread count. 4 matches the
             # public runner's vCPUs. For a private 2-core/7GB runner, drop to

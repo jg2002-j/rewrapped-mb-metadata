@@ -100,7 +100,15 @@ def ram_measurable():
 class GuardrailConfig:
     def __init__(self):
         self.runner_ram_mb = _env_int("RUNNER_RAM_MB", 16384)
-        self.ram_headroom_mb = _env_int("RAM_HEADROOM_MB", 1024)
+        # Headroom covers the OS, the CI runner agent, Python/DuckDB overhead, and
+        # the kernel page cache for the on-disk engine file. 4 GB on a 16 GB box:
+        # a ~12.5 GB peak starved the runner ("lost communication"), so the safe
+        # process-RSS ceiling is ~12 GB, not 15 GB.
+        self.ram_headroom_mb = _env_int("RAM_HEADROOM_MB", 4096)
+        # Watchdog: self-terminate if RSS climbs to within this margin of PHYSICAL
+        # RAM, so the process dies cleanly (exit 137 + a log line) instead of
+        # starving the host and showing as "runner lost communication".
+        self.abort_headroom_mb = _env_int("RAM_ABORT_HEADROOM_MB", 2048)
         self.disk_headroom_gb = _env_int("DISK_HEADROOM_GB", 2)
         self.min_start_disk_gb = _env_int("MIN_START_DISK_GB", 40)
         self.max_runtime_min = _env_int("MAX_RUNTIME_MIN", 300)
@@ -114,13 +122,31 @@ class GuardrailConfig:
             envelope = actual
         return max(256, envelope - self.ram_headroom_mb)
 
+    def hard_abort_mb(self):
+        """RSS at which the watchdog self-terminates (physical RAM - abort headroom).
+
+        Returns 0 (disabled) if physical RAM can't be determined. This is based on
+        ACTUAL machine RAM, not the target envelope, so it only fires when the real
+        host is about to be starved -- never on a roomy dev machine.
+        """
+        actual = total_ram_mb()
+        if not actual:
+            return 0
+        return max(0, actual - self.abort_headroom_mb)
+
 
 class GuardrailMonitor:
-    """Background sampler tracking peak RSS and minimum free disk."""
+    """Background sampler tracking peak RSS and minimum free disk.
 
-    def __init__(self, work_dir=None, interval=5.0):
+    If hard_abort_mb is set, self-terminates (os._exit 137) the moment RSS exceeds
+    it -- a best-effort backstop that turns host starvation into a clean, logged
+    failure instead of a silent "runner lost communication".
+    """
+
+    def __init__(self, work_dir=None, interval=3.0, hard_abort_mb=0):
         self.work_dir = work_dir or os.getcwd()
         self.interval = interval
+        self.hard_abort_mb = hard_abort_mb or 0
         self._proc = psutil.Process() if _HAS_PSUTIL else None
         self.peak_rss = 0
         self.min_free = None
@@ -132,6 +158,15 @@ class GuardrailMonitor:
         rss = _current_rss_bytes(self._proc)
         if rss > self.peak_rss:
             self.peak_rss = rss
+        if self.hard_abort_mb and rss and (rss / _MIB) > self.hard_abort_mb:
+            logger.critical(
+                f"[GUARDRAIL] HARD ABORT: process RSS {int(rss / _MIB)}MB exceeded "
+                f"{self.hard_abort_mb}MB (physical RAM minus safety margin). "
+                f"Self-terminating to avoid starving the host (which would otherwise "
+                f"appear as 'runner lost communication'). Lower PIPELINE_MEMORY_LIMIT "
+                f"or PIPELINE_THREADS."
+            )
+            os._exit(137)
         try:
             free = shutil.disk_usage(self.work_dir).free
             if self.min_free is None or free < self.min_free:

@@ -17,12 +17,15 @@ jobs:
       # (Private repos would be 2 vCPU / 7 GB; if you ever make the repo private,
       #  set RUNNER_RAM_MB=7168, PIPELINE_MEMORY_LIMIT=5GB, PIPELINE_THREADS=2.)
       RUNNER_RAM_MB: 16384      # RAM envelope to enforce (peak RSS < this - headroom)
-      RAM_HEADROOM_MB: 1024     # leave this much for the OS + Python outside DuckDB
+      RAM_HEADROOM_MB: 4096     # OS + runner agent + Python/DuckDB overhead + page cache
       DISK_HEADROOM_GB: 2       # fail if free disk on the work volume ever drops below this
       MIN_START_DISK_GB: 40     # fail fast if the work volume can't hold the dataset peak
       MAX_RUNTIME_MIN: 300      # soft wall-clock ceiling (hard cap is timeout-minutes, < GitHub's 360)
-      # DuckDB budget for the 16 GB box (12 GB leaves room for Python + OS).
-      PIPELINE_MEMORY_LIMIT: "12GB"
+      # DuckDB budget for the 16 GB box. This is the DuckDB allocation, NOT the box:
+      # the OS, runner agent, Python overhead and page cache also live in 16 GB.
+      # 12 GB peaked ~12.5 GB and starved the runner ("lost communication"); 10 GB
+      # keeps peak ~10.7 GB with ~5 GB headroom.
+      PIPELINE_MEMORY_LIMIT: "10GB"
       PIPELINE_THREADS: "4"
       # The pipeline (main.py) reads the thresholds above. On CI we let it
       # MEASURE/report only and leave enforcement to the steps below (they use the
