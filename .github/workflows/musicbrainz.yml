@@ -12,18 +12,19 @@ jobs:
     # clear signal instead of being silently killed at the ceiling.
     timeout-minutes: 330
     env:
-      # --- target runner envelope (GitHub free-tier standard runners) ---------
-      # Public repos:  4 vCPU / 16 GB RAM / 14 GB SSD  (free, unlimited)
-      # Private repos: 2 vCPU /  7 GB RAM / 14 GB SSD  (free-tier minutes)
-      # The pipeline caps DuckDB at 5.5 GB, i.e. it targets the 7 GB box, so the
-      # RAM guardrail enforces the 7 GB envelope even on a larger public runner:
-      # a green run is then guaranteed to also fit the smallest free-tier runner.
-      RUNNER_RAM_MB: 7168       # target RAM envelope to enforce (set 16384 for public-only)
+      # --- target runner envelope: PUBLIC-repo standard runner -----------------
+      # Public repos: 4 vCPU / 16 GB RAM / 14 GB SSD  (free, unlimited minutes).
+      # (Private repos would be 2 vCPU / 7 GB; if you ever make the repo private,
+      #  set RUNNER_RAM_MB=7168, PIPELINE_MEMORY_LIMIT=5GB, PIPELINE_THREADS=2.)
+      RUNNER_RAM_MB: 16384      # RAM envelope to enforce (peak RSS < this - headroom)
       RAM_HEADROOM_MB: 1024     # leave this much for the OS + Python outside DuckDB
       DISK_HEADROOM_GB: 2       # fail if free disk on the work volume ever drops below this
       MIN_START_DISK_GB: 40     # fail fast if the work volume can't hold the dataset peak
-      MAX_RUNTIME_MIN: 300      # soft wall-clock ceiling (hard cap is timeout-minutes above)
-      # The pipeline (main.py) reads the same thresholds above. On CI we let it
+      MAX_RUNTIME_MIN: 300      # soft wall-clock ceiling (hard cap is timeout-minutes, < GitHub's 360)
+      # DuckDB budget for the 16 GB box (12 GB leaves room for Python + OS).
+      PIPELINE_MEMORY_LIMIT: "12GB"
+      PIPELINE_THREADS: "4"
+      # The pipeline (main.py) reads the thresholds above. On CI we let it
       # MEASURE/report only and leave enforcement to the steps below (they use the
       # authoritative /usr/bin/time peak and preserve the artifact on a soft breach).
       # Locally the Python guardrails enforce by default so you can validate the fit.

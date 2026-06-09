@@ -6,17 +6,18 @@ so the SAME limits are enforced when you run the script locally as on CI. Peak
 RSS includes DuckDB because DuckDB runs in-process.
 
 Thresholds (all overridable via environment variables; defaults target the
-stricter 7 GB private free-tier box, since the pipeline caps DuckDB at 5.5 GB):
+public-repo free-tier runner: 4 vCPU / 16 GB RAM / 14 GB SSD):
 
-  RUNNER_RAM_MB        target RAM envelope to enforce        (default 7168)
+  RUNNER_RAM_MB        target RAM envelope to enforce        (default 16384)
   RAM_HEADROOM_MB      RAM left for OS + Python outside it    (default 1024)
   DISK_HEADROOM_GB     never let free disk drop below this    (default 2)
   MIN_START_DISK_GB    fail fast if the volume can't hold it  (default 40)
   MAX_RUNTIME_MIN      soft wall-clock ceiling                (default 300)
   PIPELINE_GUARDRAILS  set to off/0/false to measure-only     (default on)
 
-The effective RAM ceiling is min(target, actual machine RAM) - headroom, so a
-green local run guarantees the job also fits the smallest free-tier runner.
+The effective RAM ceiling is min(target, actual machine RAM) - headroom. For a
+private 7 GB runner instead, set RUNNER_RAM_MB=7168 (and lower the DuckDB budget
+via PIPELINE_MEMORY_LIMIT / PIPELINE_THREADS in main.py to match).
 
 psutil is used when available (required for RAM measurement on Windows); on
 Linux/macOS the stdlib `resource` module supplies the true peak as a fallback.
@@ -98,7 +99,7 @@ def ram_measurable():
 
 class GuardrailConfig:
     def __init__(self):
-        self.runner_ram_mb = _env_int("RUNNER_RAM_MB", 7168)
+        self.runner_ram_mb = _env_int("RUNNER_RAM_MB", 16384)
         self.ram_headroom_mb = _env_int("RAM_HEADROOM_MB", 1024)
         self.disk_headroom_gb = _env_int("DISK_HEADROOM_GB", 2)
         self.min_start_disk_gb = _env_int("MIN_START_DISK_GB", 40)

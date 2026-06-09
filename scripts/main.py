@@ -1,14 +1,14 @@
-import duckdb
-import logging
 import os
 import sys
 import time
+import logging
 from collections import OrderedDict
 from contextlib import contextmanager
 
+import duckdb
 import guardrails
-from schema import initialize_native_sqlite_schema, apply_optimized_indexes
 from utils import stream_and_load_musicbrainz, cleanup_temp_files
+from schema import initialize_native_sqlite_schema, apply_optimized_indexes
 
 logging.basicConfig(
     level=logging.INFO,
@@ -81,11 +81,13 @@ def main():
         with phase("engine_configuration"):
             logger.info("Configuring engine hardware allocation boundaries...")
             # All tunable via env so the budget can be adjusted without code edits.
-            mem_limit = os.environ.get("PIPELINE_MEMORY_LIMIT", "5.5GB")
+            # Defaults target the public free-tier runner (4 vCPU / 16 GB RAM):
+            # a 12 GB DuckDB budget leaves headroom for Python + OS under 16 GB.
+            mem_limit = os.environ.get("PIPELINE_MEMORY_LIMIT", "12GB")
             temp_limit = os.environ.get("PIPELINE_TEMP_LIMIT", "30GB")
-            # DuckDB's per-operator memory scales with thread count, so cap it (the
-            # #1 OOM remedy). Default to a modest cap regardless of core count;
-            # override with PIPELINE_THREADS if a run has spare headroom.
+            # DuckDB's per-operator memory scales with thread count. 4 matches the
+            # public runner's vCPUs. For a private 2-core/7GB runner, drop to
+            # PIPELINE_THREADS=2 and PIPELINE_MEMORY_LIMIT=5GB.
             default_threads = max(1, min(4, os.cpu_count() or 2))
             threads = int(os.environ.get("PIPELINE_THREADS", str(default_threads)))
 
