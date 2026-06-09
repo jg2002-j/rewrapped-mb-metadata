@@ -184,21 +184,36 @@ CREATE TABLE target_sqlite.release_group
 
 CREATE TABLE target_sqlite.recording
 (
-    recording_mbid             TEXT PRIMARY KEY,
-    release_group_mbid         TEXT NOT NULL,
-    length                     INTEGER,
-    primary_artist_mbid        TEXT,
-    primary_artist_name        TEXT,
-    primary_artist_wikidata_id TEXT
+    recording_mbid      TEXT PRIMARY KEY,
+    release_group_mbid  TEXT NOT NULL,
+    length              INTEGER,
+    primary_artist_mbid TEXT   -- FK -> artists.artist_mbid (position-0 credit)
 );
 
+-- Normalised artist dimension: one row per distinct artist credited on any
+-- canonical recording or release group. Name / wikidata are stored ONCE here
+-- instead of being duplicated on every credit row.
+CREATE TABLE target_sqlite.artists
+(
+    artist_mbid        TEXT PRIMARY KEY,
+    artist_name        TEXT NOT NULL,
+    artist_wikidata_id TEXT
+);
+
+-- Credit link tables. To get names/wikidata, join artist_mbid -> artists.
+-- position 0 is the primary (first-credited) artist.
 CREATE TABLE target_sqlite.recording_artists
 (
-    recording_mbid     TEXT    NOT NULL,
+    recording_mbid TEXT    NOT NULL,
+    artist_mbid    TEXT    NOT NULL,
+    position       INTEGER NOT NULL
+);
+
+CREATE TABLE target_sqlite.release_group_artists
+(
+    release_group_mbid TEXT    NOT NULL,
     artist_mbid        TEXT    NOT NULL,
-    position           INTEGER NOT NULL,
-    artist_name        TEXT    NOT NULL,
-    artist_wikidata_id TEXT
+    position           INTEGER NOT NULL
 );
 
 CREATE TABLE target_sqlite.link_lookup
@@ -226,6 +241,10 @@ CREATE TABLE target_sqlite.text_lookup
   text.
 * There will be 1 row in `release_group` for 1 to n rows in `recording` - this mapping is determined using
   the [above canonical selection logic](https://www.google.com/search?q=%23logic-for-determining-canonical-release-group).
+* `recording_artists` and `release_group_artists` each hold 1 to n credit rows (one per credited artist, ordered by
+  `position`, 0 = primary) for a recording / release group respectively. Both reference `artists.artist_mbid`; join to
+  `artists` for the display name and wikidata id. `recording.primary_artist_mbid` is a convenience pointer to the
+  position-0 recording credit.
 
 # Additional Indexes
 
@@ -234,23 +253,28 @@ immediately post-migration:
 
 ```sql
 CREATE INDEX IF NOT EXISTS idx_text_lookup ON text_lookup (track_title, artist_name, release_title, recording_mbid);
-CREATE INDEX IF NOT EXISTS idx_recording_artists_lookup ON recording_artists (recording_mbid, artist_mbid);
-CREATE INDEX IF NOT EXISTS idx_recording_artists_details ON recording_artists (position, artist_name, artist_wikidata_id);
+CREATE INDEX IF NOT EXISTS idx_recording_artists ON recording_artists (recording_mbid, position, artist_mbid);
+CREATE INDEX IF NOT EXISTS idx_release_group_artists ON release_group_artists (release_group_mbid, position, artist_mbid);
 
 ```
 
 `idx_text_lookup` covers all three equality-matched fallback columns (`track_title`, `artist_name`, `release_title`) and
-appends `recording_mbid`, so the fallback lookup is a covering index seek (no row fetch). `ANALYZE` is run after the
-indexes are built so the downstream planner reliably chooses them.
+appends `recording_mbid`, so the fallback lookup is a covering index seek (no row fetch). The two credit indexes are
+covering for "fetch a recording's / release group's artists in `position` order" — `artist_mbid` trails the key so the
+seek returns it without touching the table (then join to `artists`). `artists` is keyed by its `artist_mbid` primary key.
+`ANALYZE` is run after the indexes are built so the downstream planner reliably chooses them.
 
 # What does the downstream service need?
 
 1. **Recording length** - used to determine the exact duration of a track in milliseconds.
 2. **Release group title** - the unified, "canonical" album concept.
 3. **Release group MBID** - utilised to dynamically fetch cover art.
-4. **Primary artist wikidata ID** - used to fetch validated artist imagery.
-5. **Additional artist names** - used to parse and display full track credits, filling in metadata gaps left by standard
-   streaming exports.
+4. **Primary artist wikidata ID** - used to fetch validated artist imagery. Resolve via
+   `recording.primary_artist_mbid -> artists.artist_wikidata_id` (or the position-0 row of `recording_artists`).
+5. **Full credits** - used to display track and album credits, filling metadata gaps left by streaming exports. Read
+   `recording_artists` (or `release_group_artists`) ordered by `position`, then join `artist_mbid -> artists` for each
+   name / wikidata id. Names and wikidata ids are no longer stored on the credit rows themselves (normalised into
+   `artists`), so this join is required.
 
 It will find these values by:
 

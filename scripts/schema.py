@@ -31,17 +31,28 @@ def initialize_native_sqlite_schema(sqlite_path):
                                                       recording_mbid      TEXT PRIMARY KEY,
                                                       release_group_mbid  TEXT NOT NULL,
                                                       length              INTEGER,
-                                                      primary_artist_mbid TEXT,
-                                                      primary_artist_name        TEXT,
-                                                      primary_artist_wikidata_id TEXT
+                                                      primary_artist_mbid TEXT
                            );
 
+                           -- Normalised artist dimension: one row per distinct artist
+                           -- credited on any canonical recording or release group.
+                           CREATE TABLE artists (
+                                                    artist_mbid        TEXT PRIMARY KEY,
+                                                    artist_name        TEXT NOT NULL,
+                                                    artist_wikidata_id TEXT
+                           );
+
+                           -- Credit link tables (join to artists for name/wikidata).
                            CREATE TABLE recording_artists (
-                                                              recording_mbid     TEXT    NOT NULL,
-                                                              artist_mbid        TEXT    NOT NULL,
-                                                              position           INTEGER NOT NULL,
-                                                              artist_name        TEXT    NOT NULL,
-                                                              artist_wikidata_id TEXT
+                                                              recording_mbid TEXT    NOT NULL,
+                                                              artist_mbid    TEXT    NOT NULL,
+                                                              position       INTEGER NOT NULL
+                           );
+
+                           CREATE TABLE release_group_artists (
+                                                                  release_group_mbid TEXT    NOT NULL,
+                                                                  artist_mbid        TEXT    NOT NULL,
+                                                                  position           INTEGER NOT NULL
                            );
 
                            CREATE TABLE link_lookup (
@@ -85,14 +96,17 @@ def apply_optimized_indexes(sqlite_path):
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_text_lookup ON text_lookup (track_title, artist_name, release_title, recording_mbid);")
         logger.info(f" -> Done. Time: {time.time() - t_start:.2f}s")
 
-        logger.info(" -> Building index Tree space: [idx_recording_artists_lookup] on recording_artists(recording_mbid, artist_mbid)...")
+        # Credit lookups: fetch a recording's / release group's artists in credit
+        # order; artist_mbid trails so the lookup is covered (no table fetch before
+        # the join to artists).
+        logger.info(" -> Building index Tree space: [idx_recording_artists] on recording_artists(recording_mbid, position, artist_mbid)...")
         t_start = time.time()
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_recording_artists_lookup ON recording_artists (recording_mbid, artist_mbid);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_recording_artists ON recording_artists (recording_mbid, position, artist_mbid);")
         logger.info(f" -> Done. Time: {time.time() - t_start:.2f}s")
 
-        logger.info(" -> Building index Tree space: [idx_recording_artists_details] on recording_artists(position, artist_name, artist_wikidata_id)...")
+        logger.info(" -> Building index Tree space: [idx_release_group_artists] on release_group_artists(release_group_mbid, position, artist_mbid)...")
         t_start = time.time()
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_recording_artists_details ON recording_artists (position, artist_name, artist_wikidata_id);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_release_group_artists ON release_group_artists (release_group_mbid, position, artist_mbid);")
         logger.info(f" -> Done. Time: {time.time() - t_start:.2f}s")
 
         # Planner statistics so the downstream service reliably chooses these indexes.
