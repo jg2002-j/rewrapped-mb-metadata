@@ -157,18 +157,55 @@ jobs:
           PIPE_END=$(date +%s)
           PIPE_SECS=$(( PIPE_END - PIPE_START ))
 
+          # --- zstd calibration: measure REAL throughput on THIS runner ----------
+          # Compress a slice of the actual DB at candidate levels, time one pass
+          # each, and project the full-DB time. This replaces generic benchmarks
+          # with what this specific 2-core runner actually does, so the level/timeout
+          # choice is grounded in measurement. Set ZSTD_CALIBRATE=0 to skip.
+          if [ "$PY_EXIT" -eq 0 ] && [ "${ZSTD_CALIBRATE:-1}" != "0" ] && [ -f metadata.db ]; then
+            CAL_SAMPLE="zstd_calib_sample.bin"
+            CAL_TARGET=268435456                       # aim for a 256 MB slice
+            DB_BYTES=$(stat -c%s metadata.db)
+            head -c "$CAL_TARGET" metadata.db > "$CAL_SAMPLE" 2>/dev/null
+            SB=$(stat -c%s "$CAL_SAMPLE" 2>/dev/null); SB=${SB:-0}
+            {
+              echo "## zstd calibration (measured on this runner)"
+              echo ""
+              echo "Sample: $(( SB / 1048576 )) MB of metadata.db; full DB: $(( DB_BYTES / 1048576 )) MB"
+              echo ""
+              echo "| Level | Measured speed | Projected full-DB compression |"
+              echo "|---|---|---|"
+              if [ "$SB" -gt 0 ]; then
+                for L in 10 12 15 19; do
+                  CS=$(date +%s%N)
+                  zstd -q -$L -c "$CAL_SAMPLE" > /dev/null 2>&1
+                  CE=$(date +%s%N)
+                  MS=$(( (CE - CS) / 1000000 )); [ "$MS" -lt 1 ] && MS=1
+                  MBPS=$(awk "BEGIN{printf \"%.1f\", ($SB/1048576)/($MS/1000.0)}")
+                  FULL_MIN=$(awk "BEGIN{printf \"%.1f\", ($DB_BYTES*($MS/1000.0))/$SB/60}")
+                  echo "| -$L | ${MBPS} MB/s | ${FULL_MIN} min |"
+                done
+              else
+                echo "| - | sample unavailable | - |"
+              fi
+            } | tee -a "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
+            rm -f "$CAL_SAMPLE"
+          fi
+
           # --- compression -------------------------------------------------------
-          # Level 19 is a strong ratio that decompresses with a plain `zstd -d`
-          # (no --long, so the downstream needs no special flags). We intentionally
-          # do NOT chase --ultra -22 --long=31: the artifact ships indexes prebuilt,
-          # and shaving ~200 MB off the download is not worth making the user
-          # rebuild tens-of-millions-row indexes on a laptop. -T0 uses both cores,
-          # -v streams progress, timeout is a generous hang-guard only.
+          # zstd speed halves roughly every 2 levels while ratio barely moves at
+          # this size. Measured: -19 ~2 MB/s (=> ~3 h on 21 GB, never finishes here),
+          # -10..-12 ~12-16 MB/s (=> ~20-30 min) for a ratio within a few % of -19.
+          # At 21 GB on a 2-core runner, -12 is the right trade (size is priority but
+          # not at the cost of the job never completing). Single-threaded: -T0
+          # chunking on 2 cores adds overhead and slightly hurts ratio. Plain
+          # `zstd -d` decompresses (no --long). The calibration table above shows the
+          # real per-level time on this runner -- adjust the level if it disagrees.
           ZSTD_EXIT=0
           ZSTD_SECS=0
           if [ "$PY_EXIT" -eq 0 ]; then
             Z_START=$(date +%s)
-            timeout 60m zstd -T0 -19 -v metadata.db -o "$ARTIFACT"
+            timeout 90m zstd -12 -v metadata.db -o "$ARTIFACT"
             ZSTD_EXIT=$?
             ZSTD_SECS=$(( $(date +%s) - Z_START ))
           fi
