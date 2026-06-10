@@ -36,6 +36,12 @@ jobs:
       - name: Maximize Build Space
         uses: easimon/maximize-build-space@v10
         with:
+          # Default root-reserve-mb is 1024, which leaves only ~1 GB free on the
+          # root filesystem -- apt index writes and pip then fail with "No space
+          # left on device" (root and the build volume are SEPARATE filesystems;
+          # apt/pip/tmp live on root). Reserve 10 GB for root; the build volume is
+          # still ~85-90 GB, far above the 40 GB the pipeline needs.
+          root-reserve-mb: '10240'
           remove-dotnet: 'true'
           remove-android: 'true'
           remove-haskell: 'true'
@@ -52,8 +58,19 @@ jobs:
 
       - name: Install System and Python Dependencies
         run: |
-          # `time` provides /usr/bin/time -v (peak RSS); zstd/curl/tar for the pipeline.
-          sudo apt-get update && sudo apt-get install -y zstd curl tar time
+          # Show root vs work-volume space up front: apt/pip write to ROOT, the
+          # pipeline writes to the work volume. If root is tight here, raise
+          # root-reserve-mb in the Maximize Build Space step.
+          echo "Filesystem space at dependency install:"; df -h / "$PWD"
+          # curl/tar/zstd are already on ubuntu-latest; the only thing we actually
+          # need from apt is GNU `time` (/usr/bin/time -v, for peak RSS). Install
+          # just that, and don't let a transient apt index hiccup fail the build:
+          # if `time` is somehow already present, we skip apt entirely.
+          if [ ! -x /usr/bin/time ]; then
+            sudo apt-get update -o Acquire::Languages=none || true
+            sudo apt-get install -y --no-install-recommends time
+          fi
+          /usr/bin/time --version || { echo "::error::/usr/bin/time missing"; exit 1; }
           # Pin DuckDB so a future breaking release can't silently change behaviour.
           # psutil powers the in-process guardrail measurements in guardrails.py.
           pip install "duckdb>=1.0,<2.0" psutil
@@ -116,10 +133,9 @@ jobs:
           # --- background disk high-water sampler (every 10s) ---
           # Per sample: available bytes on the work volume + bytes used by the
           # working tree (spill buffer, engine file, db, vacuum copy, .zst).
-          # CRITICAL: the sampler must NOT inherit this step's stdout, or the
-          # GitHub runner waits for that pipe to close and the step hangs forever
-          # after the real work is done. We redirect its output to a file only and
-          # kill it hard (whole loop, including any in-flight `du`/`sleep`).
+          # CRITICAL: redirect the sampler's stdout off this step's pipe, or the
+          # runner waits for that pipe to close and the step hangs after the real
+          # work is done. Kill it hard (loop + any in-flight du/sleep child).
           sample_disk() {
             while true; do
               avail=$(df -B1 --output=avail . 2>/dev/null | tail -1 | tr -d ' ')
@@ -130,7 +146,6 @@ jobs:
           }
           sample_disk >/dev/null 2>&1 &
           SAMPLER_PID=$!
-          # Best-effort cleanup even if the step aborts early.
           trap 'kill -9 "$SAMPLER_PID" 2>/dev/null; pkill -9 -P "$SAMPLER_PID" 2>/dev/null; true' EXIT
 
           # --- pipeline under GNU /usr/bin/time -v (peak RSS) ---
@@ -142,17 +157,18 @@ jobs:
           PIPE_END=$(date +%s)
           PIPE_SECS=$(( PIPE_END - PIPE_START ))
 
-          # --- compression (only if the pipeline produced a database) ---
-          # Level 19 + long-range matching: 5-10x faster than --ultra -22 for only
-          # ~1-3% larger output (MBID strings repeat across tables, so --long helps
-          # a lot). Decompresses with a plain `zstd -d`. -v so progress is visible
-          # in the log instead of a silent multi-minute gap. `timeout` guarantees
-          # the step can never hang here.
+          # --- compression -------------------------------------------------------
+          # Level 19 is a strong ratio that decompresses with a plain `zstd -d`
+          # (no --long, so the downstream needs no special flags). We intentionally
+          # do NOT chase --ultra -22 --long=31: the artifact ships indexes prebuilt,
+          # and shaving ~200 MB off the download is not worth making the user
+          # rebuild tens-of-millions-row indexes on a laptop. -T0 uses both cores,
+          # -v streams progress, timeout is a generous hang-guard only.
           ZSTD_EXIT=0
           ZSTD_SECS=0
           if [ "$PY_EXIT" -eq 0 ]; then
             Z_START=$(date +%s)
-            timeout 30m zstd -T0 -19 --long=27 -v metadata.db -o "$ARTIFACT"
+            timeout 60m zstd -T0 -19 -v metadata.db -o "$ARTIFACT"
             ZSTD_EXIT=$?
             ZSTD_SECS=$(( $(date +%s) - Z_START ))
           fi
