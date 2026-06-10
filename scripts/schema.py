@@ -86,6 +86,17 @@ def apply_optimized_indexes(sqlite_path):
         conn.execute("PRAGMA synchronous=OFF;")
         conn.execute("PRAGMA cache_size=-2000000;")  # ~2 GB page cache for index builds
 
+        # Force the index-sort temp files onto the work volume (same dir as the DB,
+        # which has tens of GB free). The SQLITE_TMPDIR/TMPDIR env redirect is
+        # IGNORED by the runner's SQLite at sort time -- temp lands on the small
+        # root fs/tmpfs instead and CREATE INDEX dies with "database or disk is
+        # full" despite 70 GB free on the work volume. temp_store_directory sets
+        # SQLite's highest-priority temp location directly (a C global), and
+        # temp_store=FILE ensures a multi-GB sort spills to disk, not memory.
+        _tmp_dir = os.path.dirname(os.path.abspath(sqlite_path)) or "."
+        conn.execute("PRAGMA temp_store=FILE;")
+        conn.execute(f"PRAGMA temp_store_directory='{_tmp_dir.replace(chr(39), chr(39) * 2)}';")
+
         cursor = conn.cursor()
 
         # Covering index for the text fallback: all three equality-matched columns
@@ -136,6 +147,11 @@ def _compact_database(sqlite_path):
     t_start = time.time()
     conn = sqlite3.connect(sqlite_path)
     try:
+        # Same temp redirect as the index build: VACUUM can also spill temp, and
+        # the env var is ignored on the runner.
+        _tmp_dir = os.path.dirname(os.path.abspath(sqlite_path)) or "."
+        conn.execute("PRAGMA temp_store=FILE;")
+        conn.execute(f"PRAGMA temp_store_directory='{_tmp_dir.replace(chr(39), chr(39) * 2)}';")
         conn.execute(f"VACUUM INTO '{compact_path}';")
     finally:
         conn.close()
