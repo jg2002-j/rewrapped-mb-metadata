@@ -116,6 +116,10 @@ jobs:
           # --- background disk high-water sampler (every 10s) ---
           # Per sample: available bytes on the work volume + bytes used by the
           # working tree (spill buffer, engine file, db, vacuum copy, .zst).
+          # CRITICAL: the sampler must NOT inherit this step's stdout, or the
+          # GitHub runner waits for that pipe to close and the step hangs forever
+          # after the real work is done. We redirect its output to a file only and
+          # kill it hard (whole loop, including any in-flight `du`/`sleep`).
           sample_disk() {
             while true; do
               avail=$(df -B1 --output=avail . 2>/dev/null | tail -1 | tr -d ' ')
@@ -124,9 +128,10 @@ jobs:
               sleep 10
             done
           }
-          sample_disk &
+          sample_disk >/dev/null 2>&1 &
           SAMPLER_PID=$!
-          trap 'kill "$SAMPLER_PID" 2>/dev/null || true' EXIT
+          # Best-effort cleanup even if the step aborts early.
+          trap 'kill -9 "$SAMPLER_PID" 2>/dev/null; pkill -9 -P "$SAMPLER_PID" 2>/dev/null; true' EXIT
 
           # --- pipeline under GNU /usr/bin/time -v (peak RSS) ---
           # /usr/bin/time writes its report to -o; the pipeline's own per-phase
@@ -138,17 +143,23 @@ jobs:
           PIPE_SECS=$(( PIPE_END - PIPE_START ))
 
           # --- compression (only if the pipeline produced a database) ---
+          # Level 19 + long-range matching: 5-10x faster than --ultra -22 for only
+          # ~1-3% larger output (MBID strings repeat across tables, so --long helps
+          # a lot). Decompresses with a plain `zstd -d`. -v so progress is visible
+          # in the log instead of a silent multi-minute gap. `timeout` guarantees
+          # the step can never hang here.
           ZSTD_EXIT=0
           ZSTD_SECS=0
           if [ "$PY_EXIT" -eq 0 ]; then
             Z_START=$(date +%s)
-            zstd -T0 --ultra -22 metadata.db -o "$ARTIFACT"
+            timeout 30m zstd -T0 -19 --long=27 -v metadata.db -o "$ARTIFACT"
             ZSTD_EXIT=$?
             ZSTD_SECS=$(( $(date +%s) - Z_START ))
           fi
 
-          # --- stop sampler ---
-          kill "$SAMPLER_PID" 2>/dev/null || true
+          # --- stop sampler (hard; reap any in-flight du/sleep child too) ---
+          kill -9 "$SAMPLER_PID" 2>/dev/null
+          pkill -9 -P "$SAMPLER_PID" 2>/dev/null
           wait "$SAMPLER_PID" 2>/dev/null || true
 
           # --- parse measurements ---
