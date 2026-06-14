@@ -44,6 +44,15 @@ def stream_and_load_musicbrainz(con):
         latest_folder = urllib.request.urlopen(req).read().decode('utf-8').strip()
         url = f"https://ftp.musicbrainz.org/pub/musicbrainz/data/fullexport/{latest_folder}/mbdump.tar.bz2"
 
+        # Record the dump identifier (e.g. 20260606-002104) so the CI release step
+        # tags the Release with the DATA version. The app compares this tag to decide
+        # whether to re-download; re-running on the same dump yields the same tag.
+        try:
+            with open("dump_version.txt", "w", encoding="utf-8") as vf:
+                vf.write(latest_folder)
+        except Exception:
+            logger.warning("Could not write dump_version.txt; release tag will fall back to a timestamp.")
+
         logger.info(f"Opening live network streaming pipe directly from: {url}")
         proc = subprocess.Popen(["curl", "-sSLf", url], stdout=subprocess.PIPE)
         tar_stream = proc.stdout

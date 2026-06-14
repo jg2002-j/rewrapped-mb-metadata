@@ -11,6 +11,9 @@ jobs:
     # Hard stop below GitHub's 6h (360 min) job cap. -19 compression on this DB is
     # ~3.5-4h, so the cap is set high (350) but still self-fails cleanly before 360.
     timeout-minutes: 350
+    # Publishing the GitHub Release (download assets) needs write access to contents.
+    permissions:
+      contents: write
     env:
       # --- target runner envelope: PUBLIC-repo standard runner -----------------
       # Public repos: 4 vCPU / 16 GB RAM / 14 GB SSD  (free, unlimited minutes).
@@ -128,7 +131,11 @@ jobs:
 
           DISK_LOG="$(mktemp)"
           TIME_REPORT="$(mktemp)"
-          ARTIFACT="metadata-${{ steps.timestamp.outputs.RUN_TS }}.db.zst"
+          # Stable name (NOT timestamped): the Release TAG carries the data version,
+          # so the downstream always looks for the same asset base name. The 9.6 GB
+          # file is split into < 2 GiB parts because that's GitHub's per-asset cap.
+          ARTIFACT="metadata_core.db.zst"
+          SPLIT_BYTES="${SPLIT_BYTES:-1900M}"
 
           # --- background disk high-water sampler (every 10s) ---
           # Per sample: available bytes on the work volume + bytes used by the
@@ -303,6 +310,57 @@ jobs:
             ZSTD_SECS=$(( $(date +%s) - Z_START ))
           fi
 
+          # --- split into < 2 GiB parts + checksums + manifest -------------------
+          # GitHub Release assets are capped at 2 GiB each, so the ~9.6 GB .zst ships
+          # as metadata_core.db.zst.part00, .part01, ... The downstream downloads the
+          # parts in order, concatenates them (reproducing the exact original bytes),
+          # verifies the SHA-256, then `zstd -d`. A file under SPLIT_BYTES still
+          # yields a single .part00, so the client path is uniform.
+          SPLIT_EXIT=0
+          DB_MB=0; ART_MB=0; PART_COUNT=0
+          if [ "$ZSTD_EXIT" -eq 0 ] && [ -f "$ARTIFACT" ]; then
+            DB_MB=0;  [ -f metadata.db ] && DB_MB=$(( $(stat -c%s metadata.db) / 1048576 ))
+            ART_MB=$(( $(stat -c%s "$ARTIFACT") / 1048576 ))
+            # The indexed DB is no longer needed once compressed; free it before split.
+            rm -f metadata.db
+            split -b "$SPLIT_BYTES" -a 2 -d "$ARTIFACT" "${ARTIFACT}.part" || SPLIT_EXIT=$?
+            PART_COUNT=$(ls "${ARTIFACT}".part?? 2>/dev/null | wc -l | tr -d ' ')
+            sha256sum "${ARTIFACT}".part?? > SHA256SUMS 2>/dev/null || true
+            DUMP_VERSION="$(cat dump_version.txt 2>/dev/null || echo unknown)"
+            ART_SHA="$(sha256sum "$ARTIFACT" | cut -d' ' -f1)"
+            ART_BYTES="$(stat -c%s "$ARTIFACT")"
+            RUN_TS="${{ steps.timestamp.outputs.RUN_TS }}" DUMP_VERSION="$DUMP_VERSION" \
+            ART_SHA="$ART_SHA" ART_BYTES="$ART_BYTES" PART_COUNT="$PART_COUNT" \
+            python - <<'PYMANIFEST'
+          import json, glob, os
+          parts = sorted(glob.glob("metadata_core.db.zst.part*"))
+          m = {
+              "dump_version": os.environ.get("DUMP_VERSION", "unknown"),
+              "run_ts": os.environ.get("RUN_TS", "unknown"),
+              "filename": "metadata_core.db.zst",
+              "has_indexes": True,
+              "parts": [os.path.basename(p) for p in parts],   # concat IN THIS ORDER
+              "part_count": int(os.environ.get("PART_COUNT", "0")),
+              "sha256": os.environ.get("ART_SHA", ""),          # of the reassembled whole
+              "compressed_bytes": int(os.environ.get("ART_BYTES", "0")),
+              "decompress": "concatenate parts in listed order, then `zstd -d metadata_core.db.zst`",
+          }
+          with open("manifest.json", "w") as f:
+              json.dump(m, f, indent=2)
+          print(json.dumps(m, indent=2))
+          PYMANIFEST
+            {
+              echo "MusicBrainz metadata (full, indexed) — dump \`${DUMP_VERSION}\`"
+              echo ""
+              echo "Optional enrichment database. Split into < 2 GiB parts (GitHub asset cap)."
+              echo "Download the parts in order, \`cat\` them into metadata_core.db.zst, then \`zstd -d\`."
+              echo "Indexes are already built in — no work needed on the user's device."
+              echo "See \`manifest.json\` for the exact part list, order, and SHA-256."
+            } > release_notes.md
+            # The Release ships the parts; drop the whole .zst to free disk.
+            rm -f "$ARTIFACT"
+          fi
+
           # --- stop sampler (hard; reap any in-flight du/sleep child too) ---
           kill -9 "$SAMPLER_PID" 2>/dev/null
           pkill -9 -P "$SAMPLER_PID" 2>/dev/null
@@ -325,8 +383,7 @@ jobs:
           ZSTD_MIN=$(awk "BEGIN{printf \"%.1f\", $ZSTD_SECS/60}")
           TOTAL_MIN=$(awk "BEGIN{printf \"%.1f\", $TOTAL_SECS/60}")
 
-          DB_MB=0;  [ -f metadata.db ] && DB_MB=$(( $(stat -c%s metadata.db) / 1048576 ))
-          ART_MB=0; [ -f "$ARTIFACT" ] && ART_MB=$(( $(stat -c%s "$ARTIFACT") / 1048576 ))
+          DB_MB=${DB_MB:-0}; ART_MB=${ART_MB:-0}; PART_COUNT=${PART_COUNT:-0}
 
           DISK_FLOOR_BYTES=$(( DISK_HEADROOM_GB * 1073741824 ))
 
@@ -343,7 +400,8 @@ jobs:
             echo "| Compression time | ${ZSTD_MIN} min | - |"
             echo "| Total time | ${TOTAL_MIN} min | ${MAX_RUNTIME_MIN} min |"
             echo "| Uncompressed DB | ${DB_MB} MB | - |"
-            echo "| Compressed artifact | ${ART_MB} MB | - |"
+            echo "| Compressed (.zst) | ${ART_MB} MB | - |"
+            echo "| Release parts | ${PART_COUNT} | < 2 GiB each |"
             echo "| Disk samples taken | ${SAMPLES} | - |"
           } | tee -a "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 
@@ -351,6 +409,7 @@ jobs:
           {
             echo "PY_EXIT=$PY_EXIT"
             echo "ZSTD_EXIT=$ZSTD_EXIT"
+            echo "SPLIT_EXIT=${SPLIT_EXIT:-0}"
             echo "RSS_MB=$RSS_MB"
             echo "MAX_RSS_MB=$MAX_RSS_MB"
             echo "MIN_AVAIL=$MIN_AVAIL"
@@ -367,13 +426,40 @@ jobs:
           # is still preserved for inspection.
           if [ "$PY_EXIT" -ne 0 ]; then echo "::error::Pipeline process exited with code $PY_EXIT"; exit "$PY_EXIT"; fi
           if [ "$ZSTD_EXIT" -ne 0 ]; then echo "::error::Compression exited with code $ZSTD_EXIT"; exit "$ZSTD_EXIT"; fi
+          if [ "${SPLIT_EXIT:-0}" -ne 0 ]; then echo "::error::Splitting into release parts exited with code ${SPLIT_EXIT}"; exit "${SPLIT_EXIT}"; fi
 
-      - name: Upload Finished Artifacts
+      - name: Publish to GitHub Release
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          DUMP_VERSION="$(cat dump_version.txt 2>/dev/null || echo "${{ steps.timestamp.outputs.RUN_TS }}")"
+          TAG="mb-${DUMP_VERSION}"
+          TITLE="MusicBrainz metadata ${DUMP_VERSION}"
+
+          # Public release assets download with NO auth (browser_download_url), and
+          # don't expire. The TAG = data version, so the app re-downloads only when
+          # MusicBrainz publishes a new dump. Idempotent across re-runs (--clobber).
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "$TITLE" --notes-file release_notes.md
+          fi
+          gh release upload "$TAG" --clobber \
+            metadata_core.db.zst.part?? \
+            manifest.json SHA256SUMS
+
+          echo "Published ${TAG}: $(ls metadata_core.db.zst.part?? | wc -l | tr -d ' ') parts."
+
+      - name: Upload manifest + checksums (debug artifact)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: metadata-${{ steps.timestamp.outputs.RUN_TS }}
-          path: metadata-${{ steps.timestamp.outputs.RUN_TS }}.db.zst
+          name: metadata-manifest-${{ steps.timestamp.outputs.RUN_TS }}
+          path: |
+            manifest.json
+            SHA256SUMS
+            release_notes.md
+            dump_version.txt
           retention-days: 14
           if-no-files-found: ignore
 
