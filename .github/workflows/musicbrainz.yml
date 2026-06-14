@@ -10,7 +10,9 @@ jobs:
     runs-on: ubuntu-latest
     # Hard stop below GitHub's 6h (360 min) job cap. -19 compression on this DB is
     # ~3.5-4h, so the cap is set high (350) but still self-fails cleanly before 360.
-    timeout-minutes: 350
+    # ~38 min pipeline + ~18-22 min (-12) compression + split + upload ~= 1 h.
+    # 120 min leaves wide margin below GitHub's 6h (360 min) cap.
+    timeout-minutes: 120
     # Publishing the GitHub Release (download assets) needs write access to contents.
     permissions:
       contents: write
@@ -292,20 +294,17 @@ jobs:
           fi
 
           # --- compression -------------------------------------------------------
-          # Free-tier-MAX compression. The data is near-incompressible (random UUID
-          # hex in tables + covering indexes), so level is a weak lever: -12 gave
-          # 46% (9.4 GB); -19 gets ~38-42% (~8 GB). -19 is the ceiling that fits the
-          # 6h job cap (~3.5-4h per calibration); --ultra -22 would be ~7.5h -> crash.
-          # --long=27 dedups repeated names/titles across text_lookup; 27 is the
-          # largest window that STILL decompresses with a plain `zstd -d` (128 MB),
-          # so the 4 GB-laptop downstream needs no flag and little memory.
-          # To go meaningfully below ~8 GB requires DATA reduction (BLOB-16 MBIDs),
-          # not compression.
+          # -12 is the chosen level. The data is near-incompressible (random UUID hex
+          # in tables + covering indexes), so level is a weak lever: -12 gives ~46%
+          # (~9.4 GB) in ~18-22 min (measured); -19 would shave ~1 GB for ~3.8h of CI
+          # -- not worth it for a one-time optional download. Plain `zstd -d`
+          # decompresses (no --long), so the downstream needs no flag and little RAM.
+          # The only real path below ~9 GB is DATA reduction (BLOB-16 MBIDs).
           ZSTD_EXIT=0
           ZSTD_SECS=0
           if [ "$PY_EXIT" -eq 0 ]; then
             Z_START=$(date +%s)
-            timeout 300m zstd -19 --long=27 -v metadata.db -o "$ARTIFACT"
+            timeout 90m zstd -12 -v metadata.db -o "$ARTIFACT"
             ZSTD_EXIT=$?
             ZSTD_SECS=$(( $(date +%s) - Z_START ))
           fi
